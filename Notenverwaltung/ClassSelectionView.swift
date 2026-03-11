@@ -58,7 +58,7 @@ struct GradeBookMainView: View {
                 }
             }
         }
-        .navigationTitle("Notenverwaltung")
+        .navigationTitle("TeacherApp")
         .adaptiveNavigationBarTitleDisplayMode(.large)
         .onChange(of: gradebooksByClassID) {
             persistData()
