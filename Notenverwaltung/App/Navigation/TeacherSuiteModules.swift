@@ -21,7 +21,7 @@ struct TeacherSuiteModuleDescriptor: Identifiable {
     static let all: [TeacherSuiteModuleDescriptor] = [
         TeacherSuiteModuleDescriptor(
             id: .gradeManagement,
-            title: "Notenverwaltung",
+            title: "TeacherApp",
             subtitle: "Noten erfassen und auswerten",
             icon: "list.clipboard.fill",
             accentColor: .Theme.primaryBlue
