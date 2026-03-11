@@ -234,7 +234,7 @@ enum GradeTileTree {
     }
 
     static func emptyRoot() -> GradeTileNode {
-        GradeTileNode(#imageLiteral(resourceName: "simulator_screenshot_3C1D71C8-4D06-4C62-AE7C-62789B192D7C.png")
+        GradeTileNode(
             title: "Schuljahr",
             type: .calculation,
             weightPercent: 100,

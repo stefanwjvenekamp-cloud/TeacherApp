@@ -497,6 +497,8 @@ struct GradebookDetailView: View {
     @State private var activeInputCell: GradeInputCellTarget?
     @State private var inputPopupDraft = ""
     @State private var inputPopupCategory: GradeInputCategory = .numbers
+    @State private var pendingDeleteNodeID: UUID?
+    @State private var showDeleteNodeDialog = false
     @State private var columnWidths: [UUID: CGFloat] = [:]
     @State private var zoomScale: CGFloat = 1.0
     @State private var baseZoomScale: CGFloat = 1.0
@@ -605,6 +607,7 @@ struct GradebookDetailView: View {
                     onAddSiblingArea: { addSiblingArea(after: node.id) },
                     onOpenSettings: { settingsTarget = TileSettingsTarget(id: node.id) },
                     onAutoDistribute: { autoDistributeWeights(for: node.id) },
+                    onDelete: { requestDeleteNode(for: node.id) },
                     onTitleSubmit: { updateNodeTitle(nodeID: node.id, newTitle: $0) },
                     onStartMove: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -637,6 +640,7 @@ struct GradebookDetailView: View {
                         onAddSiblingArea: { addSiblingArea(after: node.id) },
                         onOpenSettings: { settingsTarget = TileSettingsTarget(id: node.id) },
                         onAutoDistribute: { autoDistributeWeights(for: node.id) },
+                        onDelete: { requestDeleteNode(for: node.id) },
                         onTitleSubmit: { updateNodeTitle(nodeID: node.id, newTitle: $0) },
                         onStartMove: {
                             withAnimation(.easeInOut(duration: 0.2)) {
@@ -921,6 +925,18 @@ struct GradebookDetailView: View {
             Button("Abbrechen", role: .cancel) { }
         } message: {
             Text("Wähle, ob mit der Standardstruktur gestartet wird oder mit einer leeren Struktur.")
+        }
+        .confirmationDialog("Reiter löschen?", isPresented: $showDeleteNodeDialog, titleVisibility: .visible) {
+            Button("Löschen", role: .destructive) {
+                guard let nodeID = pendingDeleteNodeID else { return }
+                deleteNode(id: nodeID)
+                pendingDeleteNodeID = nil
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingDeleteNodeID = nil
+            }
+        } message: {
+            Text("Dieser Reiter wird dauerhaft gelöscht.")
         }
         .overlay(alignment: .top) {
             if showAddStudentSheet {
@@ -1510,6 +1526,38 @@ struct GradebookDetailView: View {
             node.weightPercent = roundedWeightPercent(newWeight)
         }
         gradebook.root = root
+    }
+
+    private func deleteNode(id: UUID) {
+        guard gradebook.root.id != id else { return }
+
+        let parentID = GradeTileTree.findParentID(root: gradebook.root, childID: id)
+        var root = gradebook.root
+        guard GradeTileTree.removeNode(root: &root, id: id) != nil else { return }
+
+        gradebook.root = root
+
+        if let parentID {
+            autoDistributeWeights(for: parentID)
+        }
+
+        syncRowsToStructure()
+
+        if movingNodeID == id {
+            movingNodeID = nil
+        }
+        if settingsTarget?.id == id {
+            settingsTarget = nil
+        }
+        if activeInputCell?.nodeID == id {
+            activeInputCell = nil
+        }
+    }
+
+    private func requestDeleteNode(for id: UUID) {
+        guard gradebook.root.id != id else { return }
+        pendingDeleteNodeID = id
+        showDeleteNodeDialog = true
     }
 
     private func updateNodeWeightAndRedistributeSiblings(nodeID: UUID, newWeight: Double) {
@@ -2158,6 +2206,7 @@ struct HeaderTileView: View {
     let onAddSiblingArea: () -> Void
     let onOpenSettings: () -> Void
     let onAutoDistribute: () -> Void
+    let onDelete: () -> Void
     let onTitleSubmit: (String) -> Void
     let onStartMove: () -> Void
     
@@ -2343,6 +2392,21 @@ struct HeaderTileView: View {
             }
         }
         .opacity(isMoving ? 0.85 : 1.0)
+        .contextMenu {
+            if !isRoot {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Löschen", systemImage: "trash")
+                }
+            }
+        }
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                guard !isRoot else { return }
+                onDelete()
+            }
+        )
         .sheet(isPresented: $showCustomWeightSheet) {
             NavigationStack {
                 Form {
@@ -3029,7 +3093,3 @@ private enum MockClassData {
         GradeBookMainView()
     }
 }
-
-
-
-
