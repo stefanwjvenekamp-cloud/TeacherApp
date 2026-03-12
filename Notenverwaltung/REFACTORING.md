@@ -17,15 +17,20 @@ Diese Datei dokumentiert den aktuellen, bereinigten Architekturstand der App. Si
 
 Die aktive Notenverwaltung besteht aus diesen Bausteinen:
 
-- `ClassSelectionView.swift`
-  Enthält die Hauptoberfläche der Notenverwaltung:
-  - `GradeBookMainView`
-  - Klassenübersicht
-  - Detailansicht pro Klasse
-  - Tabellenansicht mit Zoom und Bearbeitungslogik
-  - SwiftData-Anbindung für Klassen, Schüler und Noten
+- `Features/GradeManagement/Views/GradeBookMainView.swift`
+  Einstieg in die Notenverwaltung mit Klassenübersicht.
 
-- `GradeBookModels.swift`
+- `Features/GradeManagement/Views/ClassGradebooksDetailView.swift`
+  Detailansicht einer Klasse mit Reiterverwaltung.
+
+- `Features/GradeManagement/Views/GradebookDetailView.swift`
+  Kern-View der Notentabelle. Das File ist bewusst in mehrere Teil-Dateien aufgeteilt:
+  - `GradebookDetailView.swift`
+  - `GradebookDetailView+Layout.swift`
+  - `GradebookDetailView+Interactions.swift`
+  - `GradebookDetailView+Grid.swift`
+
+- `Features/GradeManagement/Models/GradeBookModels.swift`
   Enthält die aktuell verwendeten In-Memory-Modelle für die Notenverwaltung:
   - `WeightOption`
   - `GradeTileNode`
@@ -36,10 +41,10 @@ Die aktive Notenverwaltung besteht aus diesen Bausteinen:
   - `ClassGradebooksState`
   - `GradeTileTree`
 
-- `Shared/Services/GradebookSnapshotStore.swift`
+- `Features/GradeManagement/Migration/GradebookSnapshotStore.swift`
   Persistiert den Tabellen- und Tab-Zustand als SwiftData-Snapshot.
 
-- `Shared/Services/LegacyGradebookMigration.swift`
+- `Features/GradeManagement/Migration/LegacyGradebookMigration.swift`
   Einmalige Migration aus der alten JSON-Datei in SwiftData.
 
 ### Domänenmodelle
@@ -76,11 +81,20 @@ Folgende Redundanzen wurden entfernt:
 - `ContentView.swift`
   Tab-Struktur, Dashboard, Modulnavigation, einfache Platzhalter-Tabs.
 
-- `ClassSelectionView.swift`
-  Fachliche Hauptlogik und UI der aktiven Notenverwaltung.
+- `App/Persistence/PersistenceController.swift`
+  Erstellt und kapselt den SwiftData-Container der App. Enthält aktuell auch einen pragmatischen Store-Reset-Fallback als letzten Notfall.
 
-- `GradeBookModels.swift`
+- `App/Migration/MigrationGateView.swift`
+  Führt die Gradebook-Migration beim App-Start aus, bevor die Hauptoberfläche erscheint.
+
+- `Features/GradeManagement/Models/GradeBookModels.swift`
   Unterstützende Zustands- und Strukturmodelle für die aktive Notenverwaltung.
+
+- `Features/GradeManagement/ViewModels/GradebookDetailViewModel.swift`
+  UI-orientiertes ViewModel der Notentabelle.
+
+- `Features/GradeManagement/Services/GradebookDetailInteractor.swift`
+  Bündelt fachliche Gradebook-Mutationen und entlastet das ViewModel.
 
 - `DesignSystem.swift`
   Zentrale Designkonstanten, Farben und wiederverwendbare UI-Helfer.
@@ -97,4 +111,4 @@ Folgende Redundanzen wurden entfernt:
 
 ## Kurzfazit
 
-Der Notenbereich ist jetzt auf einen aktiven Implementierungsweg reduziert. Navigation, UI und zugehörige Hilfsmodelle sind klarer geschnitten als zuvor, und die zuvor vorhandene Doppelstruktur für die Notenverwaltung ist entfernt.
+Der Notenbereich ist jetzt auf einen aktiven Implementierungsweg reduziert und deutlich klarer entlang des Features `GradeManagement` geschnitten. App-Bootstrap, Persistenz, Migration, Views, Modelle und Services sind heute konsistenter getrennt als zuvor.

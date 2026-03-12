@@ -27,8 +27,9 @@ Eine modulare iPad-App für Lehrkräfte. Der aktuell ausgebaute Bereich ist die 
 │  ClassGradebooksDetailView          │
 │  GradebookDetailView + Popups       │
 ├─────────────────────────────────────┤
-│  ViewModel + Services               │  Logik und Zustandsverwaltung
+│  ViewModel + Interactor + Services  │  Logik und Zustandsverwaltung
 │  GradebookDetailViewModel           │
+│  GradebookDetailInteractor          │
 │  GradebookNodeService               │
 │  GradebookStudentService            │
 │  GradebookRepository                │
@@ -81,17 +82,18 @@ Der `GradebookTreeService` übersetzt zwischen beiden Formen.
 ```
 Lehrer tippt "2,3" → GradeInputPopup → ViewModel.setInputValue()
   → aktualisiert lokalen Zustand (rows)
+  → GradebookDetailInteractor.setInputValue()
   → GradebookRepository.upsertCellValue() → Datenbank
 ```
 
 **App-Start:**
 ```
-NotenverwaltungApp → ModelContainer (Datenbank öffnen)
+NotenverwaltungApp → PersistenceController (ModelContainer öffnen)
   → MigrationGateView → alte Formate migrieren
   → GradeBookMainView → Klassen laden, Default-Tabs sicherstellen
   → Nutzer wählt Klasse → ClassGradebooksDetailView
   → Nutzer sieht Tab → GradebookDetailView
-    → ViewModel liest Notenbaum + Schülerzeilen aus Datenbank
+    → ViewModel delegiert fachliche Lese-/Schreiboperationen an den Interactor
 ```
 
 ## Projektstruktur
@@ -99,7 +101,9 @@ NotenverwaltungApp → ModelContainer (Datenbank öffnen)
 ### App-Einstieg
 | Datei | Beschreibung |
 |-------|-------------|
-| `NotenverwaltungApp.swift` | App-Entry-Point, ModelContainer, MigrationGate |
+| `NotenverwaltungApp.swift` | App-Entry-Point, Composition Root |
+| `App/Persistence/PersistenceController.swift` | Kapselt Schema, ModelContainer und Store-Reset-Fallback |
+| `App/Migration/MigrationGateView.swift` | Führt Migrationen vor dem Anzeigen der Hauptoberfläche aus |
 | `ContentView.swift` | TabBar (Übersicht, Noten, Briefe, Kalender, Planung) + Dashboard |
 
 ### Datenmodelle
@@ -108,18 +112,28 @@ NotenverwaltungApp → ModelContainer (Datenbank öffnen)
 | `Core/Domain/CoreEducationModels.swift` | Stammdaten: SchoolClass, Student, Teacher, Subject, Course |
 | `Features/.../Models/GradebookEntities.swift` | Notentabellen-Entities: Tab, Node, Row, CellValue |
 | `Features/.../Models/GradeAssessmentModels.swift` | Assessment, GradeEntry, GradeComment |
-| `GradeBookModels.swift` | In-Memory-Modelle: GradeTileNode, GradeTileTree, Enums |
+| `Features/.../Models/GradeBookModels.swift` | In-Memory-Modelle: GradeTileNode, GradeTileTree, Enums |
 | `Features/.../Models/GradebookViewHelpers.swift` | UI-Hilfstypen: InsertionSlot, GradeInputCellTarget etc. |
 
 ### ViewModel
 | Datei | Beschreibung |
 |-------|-------------|
-| `Features/.../ViewModels/GradebookDetailViewModel.swift` | Zentrales ViewModel für die Notentabelle — hält UI-State und delegiert an Services |
+| `Features/.../ViewModels/GradebookDetailViewModel.swift` | Zentrales ViewModel für die Notentabelle — hält UI-State und delegiert fachliche Operationen |
+
+### Interactor
+| Datei | Beschreibung |
+|-------|-------------|
+| `Features/.../Services/GradebookDetailInteractor.swift` | Bündelt fachliche Gradebook-Mutationen und Zugriffe auf Repository/Services |
 
 ### Views
 | Datei | Beschreibung |
 |-------|-------------|
-| `ClassSelectionView.swift` | GradeBookMainView, ClassGradebooksDetailView, GradebookDetailView |
+| `Features/.../Views/GradeBookMainView.swift` | Einstieg in die Notenverwaltung mit Klassenübersicht |
+| `Features/.../Views/ClassGradebooksDetailView.swift` | Detailansicht einer Klasse mit Reiterverwaltung |
+| `Features/.../Views/GradebookDetailView.swift` | Kern-View der Notentabelle |
+| `Features/.../Views/GradebookDetailView+Layout.swift` | Zoom, Scroll und Tabellenlayout |
+| `Features/.../Views/GradebookDetailView+Interactions.swift` | Dialoge, Overlays und Interaktionsflüsse |
+| `Features/.../Views/GradebookDetailView+Grid.swift` | Grid-, Zell- und Darstellungslogik |
 | `Features/.../Views/HeaderTileView.swift` | Einzelne Kachel im Tabellenkopf |
 | `Features/.../Views/FloatingTileSettingsPanel.swift` | Bearbeitungs-Popup für Knoten |
 | `Features/.../Views/GradeInputPopup.swift` | Noteneingabe-Popup |
@@ -130,15 +144,19 @@ NotenverwaltungApp → ModelContainer (Datenbank öffnen)
 ### Services
 | Datei | Beschreibung |
 |-------|-------------|
-| `Shared/Services/GradebookRepository.swift` | Hauptzugang zur Datenbank — CRUD für Tabs, Rows, Nodes, CellValues |
-| `Shared/Services/GradebookTreeService.swift` | Übersetzung zwischen GradeTileNode (Speicher) und NodeEntity (DB) |
-| `Shared/Services/GradebookNodeService.swift` | Baumoperationen: Knoten hinzufügen, löschen, verschieben, Gewichte |
-| `Shared/Services/GradebookStudentService.swift` | Schülerverwaltung: hinzufügen, löschen, umbenennen |
-| `Shared/Services/CSVImportService.swift` | CSV-Parsing für Schüler-Import |
-| `Shared/Services/MockSeedDataService.swift` | Demo-Daten beim ersten Start |
-| `Shared/Services/GradebookMigrationService.swift` | Migriert alte Snapshot-Daten in Entities |
-| `Shared/Services/LegacyGradebookMigration.swift` | Migriert uraltes JSON-Format |
-| `Shared/Services/GradebookSnapshotStore.swift` | Liest alte Snapshot-Daten (nur noch für Migration) |
+| `Features/.../Services/GradebookRepository.swift` | Hauptzugang zur Datenbank — CRUD für Tabs, Rows, Nodes, CellValues |
+| `Features/.../Services/GradebookTreeService.swift` | Übersetzung zwischen GradeTileNode (Speicher) und NodeEntity (DB) |
+| `Features/.../Services/GradebookNodeService.swift` | Baumoperationen: Knoten hinzufügen, löschen, verschieben, Gewichte |
+| `Features/.../Services/GradebookStudentService.swift` | Schülerverwaltung: hinzufügen, löschen, umbenennen |
+| `Features/.../Services/CSVImportService.swift` | CSV-Parsing für Schüler-Import |
+| `Features/.../Services/MockSeedDataService.swift` | Demo-Daten beim ersten Start |
+
+### Migration
+| Datei | Beschreibung |
+|-------|-------------|
+| `Features/.../Migration/GradebookMigrationService.swift` | Migriert alte Snapshot-Daten in Entities |
+| `Features/.../Migration/LegacyGradebookMigration.swift` | Migriert uraltes JSON-Format |
+| `Features/.../Migration/GradebookSnapshotStore.swift` | Liest alte Snapshot-Daten (nur noch für Migration) |
 
 ### Sonstiges
 | Datei | Beschreibung |
@@ -154,4 +172,4 @@ Beim App-Start werden zwei Migrationspfade geprüft:
 1. **Legacy-JSON** (`gradebook_data.json`): Uraltes Format aus der ersten App-Version. Wird in SwiftData-Entities konvertiert und die Datei gelöscht.
 2. **Snapshot-Migration** (`GradebookSnapshot`): Älteres SwiftData-Format, bei dem der Tabellenzustand als JSON-Blob gespeichert wurde. Wird in einzelne Entities (Tab, Node, Row, CellValue) aufgelöst.
 
-Falls die Datenbank inkompatibel ist (z.B. nach größeren Schema-Änderungen), wird sie automatisch gelöscht und neu erstellt.
+Falls der SwiftData-Store nicht geöffnet werden kann, versucht die App aktuell als letzten Notfall, die Store-Dateien zurückzusetzen und den Container neu zu erstellen. Das ist ein pragmatischer Fallback, aber noch keine produktionsreife, versionierte Migrationsstrategie.
