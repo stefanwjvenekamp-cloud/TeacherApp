@@ -1130,7 +1130,7 @@ struct GradebookDetailView: View {
             horizontalScrollOffset = value
         }
         #endif
-        .gesture(
+        .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { value in
                     zoomScale = max(0.5, min(baseZoomScale * value.magnification, 3.0))
@@ -1151,7 +1151,7 @@ struct GradebookDetailView: View {
             horizontalScrollOffset = value
         }
         #endif
-        .gesture(
+        .simultaneousGesture(
             MagnificationGesture()
                 .onChanged { value in
                     zoomScale = max(0.5, min(baseZoomScale * value, 3.0))
