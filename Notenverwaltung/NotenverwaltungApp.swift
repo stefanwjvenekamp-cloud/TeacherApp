@@ -21,7 +21,8 @@ struct NotenverwaltungApp: App {
             Student.self,
             Assessment.self,
             GradeEntry.self,
-            GradeComment.self
+            GradeComment.self,
+            GradebookSnapshot.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
