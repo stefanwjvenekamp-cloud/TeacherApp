@@ -87,6 +87,9 @@ final class SchoolClass {
     @Relationship(deleteRule: .cascade)
     var students: [Student]
 
+    @Relationship(deleteRule: .cascade, inverse: \GradebookTabEntity.schoolClass)
+    var gradebookTabs: [GradebookTabEntity]
+
     var homeroomTeacherId: UUID?
     var courseIDs: [UUID]
 
@@ -97,6 +100,7 @@ final class SchoolClass {
         self.schoolYear = schoolYear
         self.createdAt = Date()
         self.students = []
+        self.gradebookTabs = []
         self.homeroomTeacherId = nil
         self.courseIDs = []
     }
@@ -149,6 +153,9 @@ final class Student {
     @Relationship(deleteRule: .cascade)
     var gradeEntries: [GradeEntry]
 
+    @Relationship(deleteRule: .nullify, inverse: \GradebookRowEntity.student)
+    var gradebookRows: [GradebookRowEntity]
+
     var courseIDs: [UUID]
 
     init(firstName: String, lastName: String, studentNumber: Int, classId: UUID) {
@@ -158,6 +165,7 @@ final class Student {
         self.studentNumber = studentNumber
         self.classId = classId
         self.gradeEntries = []
+        self.gradebookRows = []
         self.courseIDs = []
     }
 

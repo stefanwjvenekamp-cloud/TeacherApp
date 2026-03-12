@@ -7,7 +7,6 @@
 
 import SwiftUI
 import SwiftData
-import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -17,9 +16,7 @@ import AppKit
 struct GradeBookMainView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var classes: [SchoolClass] = []
-    @State private var gradebooksByClassID: [UUID: ClassGradebooksState] = [:]
     @State private var hasLoaded = false
-    @State private var isPersisting = false
 
     var body: some View {
         ZStack {
@@ -34,13 +31,12 @@ struct GradeBookMainView: View {
                         ForEach(classes) { schoolClass in
                             NavigationLink {
                                 ClassGradebooksDetailView(
-                                    schoolClass: schoolClass,
-                                    gradebooksState: binding(for: schoolClass)
+                                    schoolClass: schoolClass
                                 )
                             } label: {
                                 ClassCard(
                                     schoolClass: schoolClass,
-                                    studentCount: selectedStudentCount(for: schoolClass)
+                                    studentCount: schoolClass.students.count
                                 )
                             }
                             .buttonStyle(.plain)
@@ -55,10 +51,6 @@ struct GradeBookMainView: View {
         .adaptiveNavigationBarTitleDisplayMode(.large)
         .task {
             loadDataIfNeeded()
-        }
-        .onChange(of: gradebooksByClassID) {
-            guard hasLoaded, !isPersisting else { return }
-            persistSnapshots()
         }
     }
 
@@ -76,46 +68,21 @@ struct GradeBookMainView: View {
         .padding(.top, 8)
     }
 
-    private func binding(for schoolClass: SchoolClass) -> Binding<ClassGradebooksState> {
-        Binding(
-            get: {
-                gradebooksByClassID[schoolClass.id] ?? defaultGradebooksState(for: schoolClass)
-            },
-            set: { newValue in
-                gradebooksByClassID[schoolClass.id] = newValue
-            }
-        )
-    }
-
-    private func defaultGradebooksState(for schoolClass: SchoolClass) -> ClassGradebooksState {
-        let firstTab = GradebookTabState(
-            schoolYear: schoolClass.schoolYear,
-            gradebook: ClassGradebookState(root: GradeTileTree.standardRoot(), rows: [])
-        )
-        return ClassGradebooksState(tabs: [firstTab], selectedTabID: firstTab.id)
-    }
-
-    private func selectedStudentCount(for schoolClass: SchoolClass) -> Int {
-        guard let state = gradebooksByClassID[schoolClass.id], !state.tabs.isEmpty else { return 0 }
-        let selectedID = state.selectedTabID ?? state.tabs.first?.id
-        let selectedTab = state.tabs.first(where: { $0.id == selectedID }) ?? state.tabs.first
-        return selectedTab?.gradebook.rows.count ?? 0
-    }
-
     private func loadDataIfNeeded() {
         guard !hasLoaded else { return }
         hasLoaded = true
 
         let existingClasses = fetchClasses()
         if existingClasses.isEmpty {
-            let migrated = LegacyGradebookMigration.migrateIfNeeded(in: modelContext)
-            if !migrated {
-                seedInitialData()
-            }
+            MockSeedDataService.seedIfNeeded(context: modelContext)
         }
 
         classes = fetchClasses()
-        loadGradebooksForClasses()
+
+        // Ensure each class has at least one tab entity
+        for schoolClass in classes {
+            GradebookRepository.ensureDefaultTab(for: schoolClass, in: modelContext)
+        }
     }
 
     private func fetchClasses() -> [SchoolClass] {
@@ -124,239 +91,15 @@ struct GradeBookMainView: View {
         )
         return (try? modelContext.fetch(descriptor)) ?? []
     }
-
-    private func loadGradebooksForClasses() {
-        var map: [UUID: ClassGradebooksState] = [:]
-
-        for schoolClass in classes {
-            let snapshotState = GradebookSnapshotStore.load(for: schoolClass.id, in: modelContext)
-            let baseState = snapshotState ?? defaultGradebooksState(for: schoolClass)
-            map[schoolClass.id] = rebuildGradebooksState(baseState, for: schoolClass)
-        }
-
-        gradebooksByClassID = map
-    }
-
-    private func rebuildGradebooksState(
-        _ state: ClassGradebooksState,
-        for schoolClass: SchoolClass
-    ) -> ClassGradebooksState {
-        let tabs = state.tabs.map { tab in
-            var gradebook = tab.gradebook
-            gradebook.rows = buildRows(for: schoolClass, semesterId: tab.schoolYear, root: gradebook.root)
-            return GradebookTabState(id: tab.id, schoolYear: tab.schoolYear, gradebook: gradebook)
-        }
-        return ClassGradebooksState(tabs: tabs, selectedTabID: state.selectedTabID)
-    }
-
-    private func buildRows(
-        for schoolClass: SchoolClass,
-        semesterId: String,
-        root: GradeTileNode
-    ) -> [StudentGradeRow] {
-        let inputIDs = Set(GradeTileTree.columns(from: root).filter { $0.type == .input }.map { $0.nodeID })
-        let students = schoolClass.students.sorted { $0.studentNumber < $1.studentNumber }
-        var rows: [StudentGradeRow] = []
-
-        for student in students {
-            let entries = fetchGradeEntries(studentId: student.id, semesterId: semesterId)
-            let entriesByKey = Dictionary(uniqueKeysWithValues: entries.map { ($0.categoryKey, $0) })
-            ensureGradeEntries(for: student.id, semesterId: semesterId, inputIDs: inputIDs, existingKeys: Set(entriesByKey.keys))
-
-            var values: [UUID: String] = [:]
-            for inputID in inputIDs {
-                if let entry = entriesByKey[inputID.uuidString] {
-                    let raw = entry.rawValue
-                    if !raw.isEmpty {
-                        values[inputID] = raw
-                    } else if let value = entry.value {
-                        values[inputID] = String(format: "%0.2f", value)
-                    } else {
-                        values[inputID] = ""
-                    }
-                } else {
-                    values[inputID] = ""
-                }
-            }
-
-            rows.append(
-                StudentGradeRow(
-                    id: student.id,
-                    studentName: student.fullName,
-                    inputValues: values
-                )
-            )
-        }
-
-        return rows
-    }
-
-    private func fetchGradeEntries(studentId: UUID, semesterId: String) -> [GradeEntry] {
-        let descriptor = FetchDescriptor<GradeEntry>(
-            predicate: #Predicate { $0.studentId == studentId && $0.semesterId == semesterId }
-        )
-        return (try? modelContext.fetch(descriptor)) ?? []
-    }
-
-    private func ensureGradeEntries(
-        for studentId: UUID,
-        semesterId: String,
-        inputIDs: Set<UUID>,
-        existingKeys: Set<String>
-    ) {
-        for inputID in inputIDs where !existingKeys.contains(inputID.uuidString) {
-            let entry = GradeEntry(
-                studentId: studentId,
-                semesterId: semesterId,
-                categoryKey: inputID.uuidString,
-                rawValue: "",
-                value: nil
-            )
-            modelContext.insert(entry)
-        }
-    }
-
-    private func persistSnapshots() {
-        isPersisting = true
-        for (classId, state) in gradebooksByClassID {
-            GradebookSnapshotStore.save(state: state, for: classId, in: modelContext)
-        }
-        isPersisting = false
-    }
-
-    private func seedInitialData() {
-        let seed = MockClassData.seed()
-
-        for schoolClass in seed.classes {
-            modelContext.insert(schoolClass)
-
-            if let state = seed.gradebooksByClassID[schoolClass.id] {
-                let studentNames = state.tabs.first?.gradebook.rows.map(\.studentName) ?? []
-                let root = state.tabs.first?.gradebook.root ?? GradeTileTree.standardRoot()
-                let inputIDs = Set(GradeTileTree.columns(from: root).filter { $0.type == .input }.map { $0.nodeID })
-
-                for (index, name) in studentNames.enumerated() {
-                    let (firstName, lastName) = splitName(name)
-                    let student = Student(
-                        firstName: firstName,
-                        lastName: lastName,
-                        studentNumber: index + 1,
-                        classId: schoolClass.id
-                    )
-                    schoolClass.students.append(student)
-
-                    for tab in state.tabs {
-                        for inputID in inputIDs {
-                            let entry = GradeEntry(
-                                studentId: student.id,
-                                semesterId: tab.schoolYear,
-                                categoryKey: inputID.uuidString,
-                                rawValue: "",
-                                value: nil
-                            )
-                            modelContext.insert(entry)
-                        }
-                    }
-                }
-
-                GradebookSnapshotStore.save(state: state, for: schoolClass.id, in: modelContext)
-            }
-        }
-    }
-
-    private func splitName(_ fullName: String) -> (String, String) {
-        let parts = fullName.split(separator: " ").map(String.init)
-        guard let first = parts.first else { return ("", "") }
-        let last = parts.dropFirst().joined(separator: " ")
-        return (first, last)
-    }
 }
-
-struct ClassCard: View {
-    let schoolClass: SchoolClass
-    let studentCount: Int
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(schoolClass.name)
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundStyle(.primary)
-
-                    Text(schoolClass.subject)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "book.closed.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.blue.gradient)
-            }
-            .padding(24)
-            .background(Color.secondarySystemGroupedBackground)
-
-            Divider()
-
-            HStack(spacing: 24) {
-                StatItem(icon: "person.2.fill", value: "\(studentCount)", label: "Schüler")
-
-                Divider()
-                    .frame(height: 30)
-
-                StatItem(icon: "calendar", value: schoolClass.schoolYear, label: "Schuljahr")
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
-            .background(Color.secondarySystemGroupedBackground.opacity(0.5))
-        }
-        .background(Color.secondarySystemGroupedBackground)
-        .shadow(color: .black.opacity(0.05), radius: 8, y: 4)
-        .contentShape(Rectangle())
-    }
-}
-
-struct StatItem: View {
-    let icon: String
-    let value: String
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 16))
-                .foregroundStyle(.blue)
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Text(label)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
 struct ClassGradebooksDetailView: View {
     @Environment(\.modelContext) private var modelContext
     let schoolClass: SchoolClass
-    @Binding var gradebooksState: ClassGradebooksState
 
     private let tabHeight: CGFloat = 38
     private let tabsHeaderHeight: CGFloat = 46
     @FocusState private var focusedTabID: UUID?
+    @State private var selectedTabID: UUID?
     @State private var editingTabID: UUID?
     @State private var editOriginalTitle: String = ""
     @State private var pendingDeleteTabID: UUID?
@@ -370,12 +113,13 @@ struct ClassGradebooksDetailView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 2)
 
-            if let selectedBinding = selectedGradebookBinding {
+            if let selectedTab = selectedTabEntity {
                 GradebookDetailView(
                     schoolClass: schoolClass,
-                    semesterId: selectedTab?.schoolYear ?? schoolClass.schoolYear,
-                    gradebook: selectedBinding
+                    tab: selectedTab,
+                    context: modelContext
                 )
+                .id(selectedTab.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .simultaneousGesture(
                     TapGesture().onEnded {
@@ -398,9 +142,6 @@ struct ClassGradebooksDetailView: View {
         .navigationTitle("\(schoolClass.name) – \(schoolClass.subject)")
         .adaptiveNavigationBarTitleDisplayMode(.inline)
         .onAppear {
-            ensureValidSelection()
-        }
-        .onChange(of: gradebooksState.tabs) {
             ensureValidSelection()
         }
         .onChange(of: focusedTabID) {
@@ -439,7 +180,7 @@ struct ClassGradebooksDetailView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(gradebooksState.tabs) { tab in
+                    ForEach(persistedTabs) { tab in
                         tabView(for: tab)
                     }
 
@@ -471,29 +212,23 @@ struct ClassGradebooksDetailView: View {
         .contentShape(Rectangle())
     }
 
-    private var selectedGradebookBinding: Binding<ClassGradebookState>? {
+    private var selectedTabEntity: GradebookTabEntity? {
         let selectedID = activeTabID
-        guard let index = gradebooksState.tabs.firstIndex(where: { $0.id == selectedID }) else { return nil }
-        return Binding(
-            get: { gradebooksState.tabs[index].gradebook },
-            set: { gradebooksState.tabs[index].gradebook = $0 }
-        )
+        return persistedTabs.first(where: { $0.id == selectedID })
     }
 
-    private var selectedTab: GradebookTabState? {
-        let selectedID = activeTabID
-        return gradebooksState.tabs.first(where: { $0.id == selectedID }) ?? gradebooksState.tabs.first
+    private var persistedTabs: [GradebookTabEntity] {
+        GradebookRepository.tabs(for: schoolClass)
     }
 
-    private func tabTitleBinding(for id: UUID) -> Binding<String> {
+    private func tabTitleBinding(for tab: GradebookTabEntity) -> Binding<String> {
         Binding(
             get: {
-                gradebooksState.tabs.first(where: { $0.id == id })?.schoolYear ?? ""
+                tab.title
             },
             set: { newValue in
-                guard let index = gradebooksState.tabs.firstIndex(where: { $0.id == id }) else { return }
-                let oldValue = gradebooksState.tabs[index].schoolYear
-                gradebooksState.tabs[index].schoolYear = newValue
+                let oldValue = tab.title
+                GradebookRepository.renameTab(tab, title: newValue, in: modelContext)
                 if oldValue != newValue {
                     renameSemesterId(from: oldValue, to: newValue)
                 }
@@ -512,12 +247,12 @@ struct ClassGradebooksDetailView: View {
     }
 
     @ViewBuilder
-    private func tabView(for tab: GradebookTabState) -> some View {
+    private func tabView(for tab: GradebookTabEntity) -> some View {
         let isEditing = editingTabID == tab.id
-        let title = tab.schoolYear.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Neuer Reiter" : tab.schoolYear
+        let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Neuer Reiter" : tab.title
 
         if isEditing {
-            TextField("", text: tabTitleBinding(for: tab.id), prompt: Text("Neuer Reiter"))
+            TextField("", text: tabTitleBinding(for: tab), prompt: Text("Neuer Reiter"))
                 .textFieldStyle(.plain)
                 .focused($focusedTabID, equals: tab.id)
                 .simultaneousGesture(
@@ -554,7 +289,7 @@ struct ClassGradebooksDetailView: View {
         } else {
             Button {
                 endTabEditing(commit: true)
-                gradebooksState.selectedTabID = tab.id
+                selectedTabID = tab.id
             } label: {
                 Text(title)
                     .lineLimit(1)
@@ -600,41 +335,37 @@ struct ClassGradebooksDetailView: View {
     }
 
     private var activeTabID: UUID? {
-        if let selected = gradebooksState.selectedTabID,
-           gradebooksState.tabs.contains(where: { $0.id == selected }) {
+        if let selected = selectedTabID,
+           persistedTabs.contains(where: { $0.id == selected }) {
             return selected
         }
-        return gradebooksState.tabs.first?.id
+        return persistedTabs.first?.id
     }
 
-    private func isSelected(_ tab: GradebookTabState) -> Bool {
+    private func isSelected(_ tab: GradebookTabEntity) -> Bool {
         tab.id == activeTabID
     }
 
     private func ensureValidSelection() {
-        guard let firstID = gradebooksState.tabs.first?.id else {
-            gradebooksState.selectedTabID = nil
+        guard let firstID = persistedTabs.first?.id else {
+            selectedTabID = nil
             return
         }
-        if gradebooksState.selectedTabID == nil || !gradebooksState.tabs.contains(where: { $0.id == gradebooksState.selectedTabID }) {
-            gradebooksState.selectedTabID = firstID
+        if selectedTabID == nil || !persistedTabs.contains(where: { $0.id == selectedTabID }) {
+            selectedTabID = firstID
         }
     }
 
     private func addNewTab() {
-        let tab = GradebookTabState(
-            schoolYear: "",
-            gradebook: ClassGradebookState(root: GradeTileTree.emptyRoot(), rows: [])
-        )
-        gradebooksState.tabs.append(tab)
-        gradebooksState.selectedTabID = tab.id
-        beginEditing(tab.id)
+        let newTab = GradebookRepository.createTab(title: "", for: schoolClass, in: modelContext)
+        selectedTabID = newTab.id
+        beginEditing(newTab.id)
     }
 
     private func beginEditing(_ tabID: UUID) {
         endTabEditing(commit: true)
-        gradebooksState.selectedTabID = tabID
-        editOriginalTitle = gradebooksState.tabs.first(where: { $0.id == tabID })?.schoolYear ?? ""
+        selectedTabID = tabID
+        editOriginalTitle = persistedTabs.first(where: { $0.id == tabID })?.title ?? ""
         editingTabID = tabID
         DispatchQueue.main.async {
             focusedTabID = tabID
@@ -643,8 +374,13 @@ struct ClassGradebooksDetailView: View {
 
     private func endTabEditing(commit: Bool) {
         guard let tabID = editingTabID else { return }
-        if !commit, let index = gradebooksState.tabs.firstIndex(where: { $0.id == tabID }) {
-            gradebooksState.tabs[index].schoolYear = editOriginalTitle
+        if !commit,
+           let tab = persistedTabs.first(where: { $0.id == tabID }) {
+            let currentTitle = tab.title
+            GradebookRepository.renameTab(tab, title: editOriginalTitle, in: modelContext)
+            if currentTitle != editOriginalTitle {
+                renameSemesterId(from: currentTitle, to: editOriginalTitle)
+            }
         }
         focusedTabID = nil
         editingTabID = nil
@@ -655,7 +391,9 @@ struct ClassGradebooksDetailView: View {
         if editingTabID == id {
             endTabEditing(commit: true)
         }
-        gradebooksState.tabs.removeAll { $0.id == id }
+        if let tab = persistedTabs.first(where: { $0.id == id }) {
+            GradebookRepository.deleteTab(tab, in: modelContext)
+        }
         if focusedTabID == id {
             focusedTabID = nil
         }
@@ -671,34 +409,9 @@ struct ClassGradebooksDetailView: View {
 struct GradebookDetailView: View {
     @Environment(\.modelContext) private var modelContext
     let schoolClass: SchoolClass
-    let semesterId: String
-    @Binding var gradebook: ClassGradebookState
+    let tab: GradebookTabEntity
+    @State private var viewModel: GradebookDetailViewModel
 
-    @State private var showNewDialog = false
-    @State private var showAddStudentSheet = false
-    @State private var showAddStudentsPopup = false
-    @State private var addStudentNameDraft = ""
-    @State private var settingsTarget: TileSettingsTarget?
-    @State private var activeInputCell: GradeInputCellTarget?
-    @State private var inputPopupDraft = ""
-    @State private var inputPopupCategory: GradeInputCategory = .numbers
-    @State private var pendingDeleteNodeID: UUID?
-    @State private var showDeleteNodeDialog = false
-    @State private var pendingDeleteStudentID: UUID?
-    @State private var showDeleteStudentDialog = false
-    @State private var pendingClearCell: GradeInputCellTarget?
-    @State private var showClearCellDialog = false
-    @State private var columnWidths: [UUID: CGFloat] = [:]
-    @State private var horizontalScrollOffset: CGFloat = 0
-    @State private var zoomScale: CGFloat = 1.0
-    @State private var baseZoomScale: CGFloat = 1.0
-    /// The node currently being moved (tap-to-move mode).
-    /// When set, other tiles show drop targets and the moving tile is visually lifted.
-    @State private var movingNodeID: UUID?
-
-    // Student name inline editing (double-tap)
-    @State private var editingStudentID: UUID?
-    @State private var editStudentOriginalName: String = ""
     @FocusState private var focusedStudentID: UUID?
 
     private let nameColumnWidth: CGFloat = 180
@@ -708,8 +421,16 @@ struct GradebookDetailView: View {
     private let cellHeight: CGFloat = 38
     private let headerGap: CGFloat = 0
 
+    init(schoolClass: SchoolClass, tab: GradebookTabEntity, context: ModelContext) {
+        self.schoolClass = schoolClass
+        self.tab = tab
+        self._viewModel = State(initialValue: GradebookDetailViewModel(
+            schoolClass: schoolClass, tab: tab, context: context
+        ))
+    }
+
     private var columns: [GradebookColumn] {
-        GradeTileTree.columns(from: gradebook.root)
+        viewModel.columns
     }
 
     private var visibleColumnIDs: Set<UUID> {
@@ -717,7 +438,7 @@ struct GradebookDetailView: View {
     }
 
     private var headerDepth: Int {
-        max(depth(of: gradebook.root), 1)
+        max(depth(of: viewModel.root), 1)
     }
 
     private var headerHeight: CGFloat {
@@ -729,11 +450,11 @@ struct GradebookDetailView: View {
     }
 
     private var gridContentHeight: CGFloat {
-        headerHeight + CGFloat(gradebook.rows.count) * cellHeight
+        headerHeight + CGFloat(viewModel.rows.count) * cellHeight
     }
 
     private var gridRowsHeight: CGFloat {
-        CGFloat(gradebook.rows.count) * cellHeight
+        CGFloat(viewModel.rows.count) * cellHeight
     }
 
     private var nameColumnContentHeight: CGFloat {
@@ -746,11 +467,9 @@ struct GradebookDetailView: View {
 
     // MARK: - Node Width Cache (Recursive Layout)
 
-    /// Maps each node ID to its total rendered width (sum of descendant leaf column widths).
-    /// Used by the recursive header layout to determine frame widths.
     private var nodeWidthCache: [UUID: CGFloat] {
         var cache: [UUID: CGFloat] = [:]
-        _ = computeNodeWidth(node: gradebook.root, cache: &cache)
+        _ = computeNodeWidth(node: viewModel.root, cache: &cache)
         return cache
     }
 
@@ -770,9 +489,6 @@ struct GradebookDetailView: View {
 
     // MARK: - Recursive Header Rendering
 
-    /// Recursively renders a tree node as a semantic header element.
-    /// - Parent nodes: VStack with title bar + HStack of children
-    /// - Leaf nodes: Single cell filling the available height
     private func headerNodeView(
         node: GradeTileNode,
         level: Int,
@@ -783,11 +499,10 @@ struct GradebookDetailView: View {
     ) -> AnyView {
         let nodeWidth = widthCache[node.id] ?? defaultColumnWidth
         let isLeaf = node.children.isEmpty
-        let thisTileIsMoving = movingNodeID == node.id
-        let isInMoveMode = movingNodeID != nil
+        let thisTileIsMoving = viewModel.movingNodeID == node.id
+        let isInMoveMode = viewModel.movingNodeID != nil
 
         if isLeaf {
-            // Leaf: single cell filling all available height
             return AnyView(
                 HeaderTileView(
                     node: node,
@@ -799,17 +514,17 @@ struct GradebookDetailView: View {
                     isLeaf: true,
                     showWeightWarning: false,
                     isMoving: thisTileIsMoving,
-                    onWeightChange: { onWeightChangeFor(node.id, $0) },
-                    onAddInput: { addChild(to: node.id, type: .input) },
-                    onAddCalculation: { addChild(to: node.id, type: .calculation) },
-                    onAddSiblingArea: { addSiblingArea(after: node.id) },
-                    onOpenSettings: { settingsTarget = TileSettingsTarget(id: node.id) },
-                    onAutoDistribute: { autoDistributeWeights(for: node.id) },
+                    onWeightChange: { viewModel.updateWeightAndRedistribute(nodeID: node.id, newWeight: $0) },
+                    onAddInput: { viewModel.addChild(to: node.id, type: .input) },
+                    onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
+                    onAddSiblingArea: { viewModel.addSiblingArea(after: node.id) },
+                    onOpenSettings: { viewModel.settingsTarget = TileSettingsTarget(id: node.id) },
+                    onAutoDistribute: { viewModel.autoDistributeWeights(for: node.id) },
                     onDelete: { requestDeleteNode(for: node.id) },
-                    onTitleSubmit: { updateNodeTitle(nodeID: node.id, newTitle: $0) },
+                    onTitleSubmit: { viewModel.updateNodeTitle(nodeID: node.id, newTitle: $0) },
                     onStartMove: {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            movingNodeID = movingNodeID == node.id ? nil : node.id
+                            viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
                         }
                     }
                 )
@@ -817,7 +532,6 @@ struct GradebookDetailView: View {
                 .zIndex(thisTileIsMoving ? 100 : 0)
             )
         } else {
-            // Parent: flat L-shape with its own title bar on top and children in the bottom-right
             let remainingHeight = availableHeight - cellHeight
 
             return AnyView(
@@ -832,17 +546,17 @@ struct GradebookDetailView: View {
                         isLeaf: false,
                         showWeightWarning: node.type == .calculation && !GradeTileTree.isWeightValid(for: node),
                         isMoving: thisTileIsMoving,
-                        onWeightChange: { onWeightChangeFor(node.id, $0) },
-                        onAddInput: { addChild(to: node.id, type: .input) },
-                        onAddCalculation: { addChild(to: node.id, type: .calculation) },
-                        onAddSiblingArea: { addSiblingArea(after: node.id) },
-                        onOpenSettings: { settingsTarget = TileSettingsTarget(id: node.id) },
-                        onAutoDistribute: { autoDistributeWeights(for: node.id) },
+                        onWeightChange: { viewModel.updateWeightAndRedistribute(nodeID: node.id, newWeight: $0) },
+                        onAddInput: { viewModel.addChild(to: node.id, type: .input) },
+                        onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
+                        onAddSiblingArea: { viewModel.addSiblingArea(after: node.id) },
+                        onOpenSettings: { viewModel.settingsTarget = TileSettingsTarget(id: node.id) },
+                        onAutoDistribute: { viewModel.autoDistributeWeights(for: node.id) },
                         onDelete: { requestDeleteNode(for: node.id) },
-                        onTitleSubmit: { updateNodeTitle(nodeID: node.id, newTitle: $0) },
+                        onTitleSubmit: { viewModel.updateNodeTitle(nodeID: node.id, newTitle: $0) },
                         onStartMove: {
                             withAnimation(.easeInOut(duration: 0.2)) {
-                                movingNodeID = movingNodeID == node.id ? nil : node.id
+                                viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
                             }
                         }
                     )
@@ -852,7 +566,6 @@ struct GradebookDetailView: View {
 
                     if remainingHeight > 0 {
                         HStack(spacing: 0) {
-                            // Flat lower-left leg for nodes that expose their own summary column.
                             if visibleColumnIDs.contains(node.id) {
                                 let ownColWidth = width(for: node.id)
                                 containerBackground(for: node, level: level)
@@ -878,18 +591,16 @@ struct GradebookDetailView: View {
         }
     }
 
-    // MARK: - Insertion Slots (Overlay-Based for Move Mode)
+    // MARK: - Insertion Slots
 
-    /// Renders insertion slot indicators as an overlay with absolute positioning.
-    /// Uses nodeWidthCache for x-positions and tree depth for y-positions.
     @ViewBuilder
     private func insertionSlotsOverlay(movingID: UUID, headerTotalHeight: CGFloat, widthCache: [UUID: CGFloat]) -> some View {
         let slots = computeInsertionSlotsV2(movingID: movingID, widthCache: widthCache)
         ForEach(slots) { slot in
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    executeInsertionAction(slot.action, draggedID: movingID)
-                    movingNodeID = nil
+                    viewModel.executeInsertionAction(slot.action, draggedID: movingID)
+                    viewModel.movingNodeID = nil
                 }
             } label: {
                 ZStack {
@@ -914,7 +625,7 @@ struct GradebookDetailView: View {
     private func computeInsertionSlotsV2(movingID: UUID, widthCache: [UUID: CGFloat]) -> [InsertionSlot] {
         var slots: [InsertionSlot] = []
         collectInsertionSlotsV2(
-            node: gradebook.root,
+            node: viewModel.root,
             level: 0,
             xOffset: 0,
             movingID: movingID,
@@ -934,7 +645,7 @@ struct GradebookDetailView: View {
     ) {
         guard node.type == .calculation else { return }
         if node.id == movingID { return }
-        if GradeTileTree.isDescendant(root: gradebook.root, ancestorID: movingID, possibleDescendantID: node.id) {
+        if GradeTileTree.isDescendant(root: viewModel.root, ancestorID: movingID, possibleDescendantID: node.id) {
             return
         }
 
@@ -944,7 +655,6 @@ struct GradebookDetailView: View {
         let slotH = CGFloat(headerDepth - childLevel) * cellHeight
         let lineWidth: CGFloat = 28
 
-        // x offset for children area (skip own column if present)
         var childXStart = xOffset
         if visibleColumnIDs.contains(node.id) {
             childXStart += width(for: node.id)
@@ -963,7 +673,6 @@ struct GradebookDetailView: View {
                 isVertical: true
             ))
         } else {
-            // Build positions for each non-moving child
             var positions: [(child: GradeTileNode, xStart: CGFloat)] = []
             var currentX = childXStart
             for child in children {
@@ -975,7 +684,6 @@ struct GradebookDetailView: View {
                 currentX += widthCache[child.id] ?? defaultColumnWidth
             }
 
-            // Before first child
             if let first = positions.first {
                 slots.append(InsertionSlot(
                     id: "before-\(first.child.id.uuidString)",
@@ -986,7 +694,6 @@ struct GradebookDetailView: View {
                 ))
             }
 
-            // After each child
             for pos in positions {
                 let childW = widthCache[pos.child.id] ?? defaultColumnWidth
                 let afterX = pos.xStart + childW - lineWidth / 2
@@ -1000,7 +707,6 @@ struct GradebookDetailView: View {
             }
         }
 
-        // Recurse into children
         var recurseX = childXStart
         for child in children {
             if child.id != movingID {
@@ -1017,9 +723,8 @@ struct GradebookDetailView: View {
         }
     }
 
-    /// Applies the same top-leading zoom layout to both fixed and scrollable table sections.
-    /// The content is laid out once in its unscaled size and only then transformed,
-    /// which keeps header widths, row heights and scroll coordinates stable.
+    // MARK: - Table Layout
+
     private func scaledTableSection<Content: View>(
         baseWidth: CGFloat,
         baseHeight: CGFloat,
@@ -1027,29 +732,27 @@ struct GradebookDetailView: View {
     ) -> some View {
         content()
             .frame(width: baseWidth, height: baseHeight, alignment: .topLeading)
-            .scaleEffect(zoomScale, anchor: .topLeading)
+            .scaleEffect(viewModel.zoomScale, anchor: .topLeading)
             .frame(
-                width: baseWidth * zoomScale,
-                height: baseHeight * zoomScale,
+                width: baseWidth * viewModel.zoomScale,
+                height: baseHeight * viewModel.zoomScale,
                 alignment: .topLeading
             )
     }
 
     private var stickyGridHeaderViewport: some View {
         GeometryReader { geometry in
-            // The header is rendered once outside the vertical scroll area and follows
-            // the body's real horizontal scroll position instead of owning a second scroll view.
             scaledTableSection(
                 baseWidth: totalColumnsWidth,
                 baseHeight: headerHeight
             ) {
                 gridHeaderView
             }
-            .offset(x: horizontalScrollOffset)
+            .offset(x: viewModel.horizontalScrollOffset)
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .clipped()
         }
-        .frame(height: headerHeight * zoomScale)
+        .frame(height: headerHeight * viewModel.zoomScale)
     }
 
     private var stickyTableHeaderRow: some View {
@@ -1070,7 +773,7 @@ struct GradebookDetailView: View {
         #if os(iOS)
         SyncedHorizontalScrollView(
             showsHorizontalScrollIndicator: false,
-            onOffsetChange: { horizontalScrollOffset = $0 }
+            onOffsetChange: { viewModel.horizontalScrollOffset = $0 }
         ) {
             scaledTableSection(
                 baseWidth: totalColumnsWidth,
@@ -1079,7 +782,7 @@ struct GradebookDetailView: View {
                 gridRowsView
             }
         }
-        .frame(height: gridRowsHeight * zoomScale, alignment: .topLeading)
+        .frame(height: gridRowsHeight * viewModel.zoomScale, alignment: .topLeading)
         #else
         ScrollView(.horizontal) {
             scaledTableSection(
@@ -1098,14 +801,13 @@ struct GradebookDetailView: View {
             }
         }
         .coordinateSpace(name: "gradebookHorizontalScroll")
-        .frame(height: gridRowsHeight * zoomScale, alignment: .topLeading)
+        .frame(height: gridRowsHeight * viewModel.zoomScale, alignment: .topLeading)
         #endif
     }
 
     private var scrollableTableBody: some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                // Names and data rows now share one real vertical scroll container.
                 scaledTableSection(
                     baseWidth: nameColumnWidth,
                     baseHeight: nameColumnRowsHeight
@@ -1127,16 +829,16 @@ struct GradebookDetailView: View {
         }
         #if !os(iOS)
         .onPreferenceChange(GridHorizontalContentOffsetPreferenceKey.self) { value in
-            horizontalScrollOffset = value
+            viewModel.horizontalScrollOffset = value
         }
         #endif
         .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { value in
-                    zoomScale = max(0.5, min(baseZoomScale * value.magnification, 3.0))
+                    viewModel.zoomScale = max(0.5, min(viewModel.baseZoomScale * value.magnification, 3.0))
                 }
                 .onEnded { _ in
-                    baseZoomScale = zoomScale
+                    viewModel.baseZoomScale = viewModel.zoomScale
                 }
         )
     }
@@ -1148,16 +850,16 @@ struct GradebookDetailView: View {
         }
         #if !os(iOS)
         .onPreferenceChange(GridHorizontalContentOffsetPreferenceKey.self) { value in
-            horizontalScrollOffset = value
+            viewModel.horizontalScrollOffset = value
         }
         #endif
         .simultaneousGesture(
             MagnificationGesture()
                 .onChanged { value in
-                    zoomScale = max(0.5, min(baseZoomScale * value, 3.0))
+                    viewModel.zoomScale = max(0.5, min(viewModel.baseZoomScale * value, 3.0))
                 }
                 .onEnded { _ in
-                    baseZoomScale = zoomScale
+                    viewModel.baseZoomScale = viewModel.zoomScale
                 }
         )
     }
@@ -1170,7 +872,10 @@ struct GradebookDetailView: View {
         }
     }
 
+    // MARK: - Body
+
     var body: some View {
+        @Bindable var vm = viewModel
         ZStack(alignment: .topLeading) {
             Color.systemGroupedBackground
                 .ignoresSafeArea()
@@ -1185,71 +890,69 @@ struct GradebookDetailView: View {
             #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Neu") {
-                    showNewDialog = true
+                    viewModel.showNewDialog = true
                 }
             }
             #endif
         }
-        .confirmationDialog("Neue Struktur", isPresented: $showNewDialog, titleVisibility: .visible) {
+        .confirmationDialog("Neue Struktur", isPresented: $vm.showNewDialog, titleVisibility: .visible) {
             Button("Standardstruktur") {
-                gradebook.root = GradeTileTree.standardRoot()
-                syncRowsToStructure()
+                viewModel.replaceRootAndSyncRows(GradeTileTree.standardRoot())
             }
             Button("Manuell") {
-                gradebook.root = GradeTileTree.emptyRoot()
-                syncRowsToStructure()
+                viewModel.replaceRootAndSyncRows(GradeTileTree.emptyRoot())
             }
             Button("Abbrechen", role: .cancel) { }
         } message: {
             Text("Wähle, ob mit der Standardstruktur gestartet wird oder mit einer leeren Struktur.")
         }
-        .confirmationDialog("Reiter löschen?", isPresented: $showDeleteNodeDialog, titleVisibility: .visible) {
+        .confirmationDialog("Reiter löschen?", isPresented: $vm.showDeleteNodeDialog, titleVisibility: .visible) {
             Button("Löschen", role: .destructive) {
-                guard let nodeID = pendingDeleteNodeID else { return }
-                deleteNode(id: nodeID)
-                pendingDeleteNodeID = nil
+                guard let nodeID = viewModel.pendingDeleteNodeID else { return }
+                viewModel.deleteNode(id: nodeID)
+                viewModel.pendingDeleteNodeID = nil
             }
             Button("Abbrechen", role: .cancel) {
-                pendingDeleteNodeID = nil
+                viewModel.pendingDeleteNodeID = nil
             }
         } message: {
             Text("Dieser Reiter wird dauerhaft gelöscht.")
         }
-        .confirmationDialog("Schüler löschen?", isPresented: $showDeleteStudentDialog, titleVisibility: .visible) {
+        .confirmationDialog("Schüler löschen?", isPresented: $vm.showDeleteStudentDialog, titleVisibility: .visible) {
             Button("Löschen", role: .destructive) {
-                guard let studentID = pendingDeleteStudentID else { return }
-                deleteStudent(id: studentID)
-                pendingDeleteStudentID = nil
+                guard let studentID = viewModel.pendingDeleteStudentID else { return }
+                viewModel.deleteStudent(id: studentID)
+                viewModel.pendingDeleteStudentID = nil
             }
             Button("Abbrechen", role: .cancel) {
-                pendingDeleteStudentID = nil
+                viewModel.pendingDeleteStudentID = nil
             }
         } message: {
             Text("Alle Noten dieses Schülers werden entfernt.")
         }
-        .confirmationDialog("Note löschen?", isPresented: $showClearCellDialog, titleVisibility: .visible) {
+        .confirmationDialog("Note löschen?", isPresented: $vm.showClearCellDialog, titleVisibility: .visible) {
             Button("Löschen", role: .destructive) {
-                guard let target = pendingClearCell else { return }
-                setInputValue("", rowID: target.rowID, nodeID: target.nodeID)
-                pendingClearCell = nil
+                guard let target = viewModel.pendingClearCell else { return }
+                viewModel.setInputValue("", rowID: target.rowID, nodeID: target.nodeID)
+                viewModel.pendingClearCell = nil
             }
             Button("Abbrechen", role: .cancel) {
-                pendingClearCell = nil
+                viewModel.pendingClearCell = nil
             }
         } message: {
             Text("Dieser Eintrag wird gelöscht.")
         }
         .overlay(alignment: .top) {
-            if showAddStudentSheet {
+            if viewModel.showAddStudentSheet {
                 AddStudentTopPopup(
-                    name: $addStudentNameDraft,
+                    name: $vm.addStudentNameDraft,
                     onCancel: {
-                        showAddStudentSheet = false
+                        viewModel.showAddStudentSheet = false
                     },
                     onAdd: {
-                        addStudent(named: addStudentNameDraft)
-                        addStudentNameDraft = ""
-                        showAddStudentSheet = false
+                        viewModel.addStudent(named: viewModel.addStudentNameDraft)
+                        viewModel.addStudentNameDraft = ""
+                        viewModel.showAddStudentSheet = false
                     }
                 )
                 .padding(.top, 8)
@@ -1258,14 +961,13 @@ struct GradebookDetailView: View {
             }
         }
         .overlay {
-            if let target = settingsTarget,
-               let node = GradeTileTree.findNode(in: gradebook.root, id: target.id) {
-                // Dunkler Hintergrund zum Schließen
+            if let target = viewModel.settingsTarget,
+               let node = GradeTileTree.findNode(in: viewModel.root, id: target.id) {
                 Color.black.opacity(0.15)
                     .ignoresSafeArea()
                     .onTapGesture {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            settingsTarget = nil
+                            viewModel.settingsTarget = nil
                         }
                     }
                 
@@ -1273,25 +975,24 @@ struct GradebookDetailView: View {
                     node: node,
                     columnWidth: Binding(
                         get: { width(for: target.id) },
-                        set: { columnWidths[target.id] = $0 }
+                        set: { viewModel.columnWidths[target.id] = $0 }
                     ),
                     showColumnWidthSlider: node.showsAsColumn,
                     minColumnWidth: minColumnWidth,
                     maxColumnWidth: maxColumnWidth,
                     onSave: { title, colorStyle in
-                        var root = gradebook.root
-                        GradeTileTree.updateNode(root: &root, id: target.id) { mutableNode in
-                            mutableNode.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? mutableNode.title : title
-                            mutableNode.colorStyle = colorStyle
+                        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedTitle.isEmpty {
+                            viewModel.updateNodeTitle(nodeID: target.id, newTitle: trimmedTitle)
                         }
-                        gradebook.root = root
+                        viewModel.updateNodeColorStyle(nodeID: target.id, colorStyle: colorStyle)
                     },
                     onAutoDistribute: {
-                        autoDistributeWeights(for: target.id)
+                        viewModel.autoDistributeWeights(for: target.id)
                     },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            settingsTarget = nil
+                            viewModel.settingsTarget = nil
                         }
                     }
                 )
@@ -1299,23 +1000,23 @@ struct GradebookDetailView: View {
             }
         }
         .overlay {
-            if let target = activeInputCell {
+            if let target = viewModel.activeInputCell {
                 Color.clear
                     .contentShape(Rectangle())
                     .ignoresSafeArea()
                     .onTapGesture {
-                        activeInputCell = nil
+                        viewModel.activeInputCell = nil
                     }
 
                 GradeInputPopup(
-                    value: $inputPopupDraft,
-                    selectedCategory: $inputPopupCategory,
+                    value: $vm.inputPopupDraft,
+                    selectedCategory: $vm.inputPopupCategory,
                     onClose: {
-                        activeInputCell = nil
+                        viewModel.activeInputCell = nil
                     },
                     onCommit: {
-                        setInputValue(inputPopupDraft, rowID: target.rowID, nodeID: target.nodeID)
-                        activeInputCell = nil
+                        viewModel.setInputValue(viewModel.inputPopupDraft, rowID: target.rowID, nodeID: target.nodeID)
+                        viewModel.activeInputCell = nil
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -1324,52 +1025,54 @@ struct GradebookDetailView: View {
             }
         }
         .overlay {
-            if showAddStudentsPopup {
+            if viewModel.showAddStudentsPopup {
                 Color.black.opacity(0.2)
                     .ignoresSafeArea()
                     .onTapGesture {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            showAddStudentsPopup = false
+                            viewModel.showAddStudentsPopup = false
                         }
                     }
 
                 AddStudentsPopup(
                     onAddSingle: {
-                        addStudentNameDraft = ""
-                        showAddStudentSheet = true
+                        viewModel.showAddStudentsPopup = false
+                        viewModel.addStudentNameDraft = ""
+                        viewModel.showAddStudentSheet = true
                     },
                     onImportStudents: { names in
-                        addStudents(names: names)
+                        viewModel.addStudents(names: names)
                     },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            showAddStudentsPopup = false
+                            viewModel.showAddStudentsPopup = false
                         }
                     }
                 )
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: settingsTarget?.id)
-        .animation(.easeInOut(duration: 0.2), value: activeInputCell?.id)
-        .animation(.easeInOut(duration: 0.2), value: showAddStudentsPopup)
-        .animation(.easeInOut(duration: 0.2), value: movingNodeID)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.settingsTarget?.id)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.activeInputCell?.id)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.showAddStudentsPopup)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.movingNodeID)
         .onChange(of: focusedStudentID) {
-            if editingStudentID != nil, focusedStudentID == nil {
+            if viewModel.editingStudentID != nil, focusedStudentID == nil {
                 endStudentEditing(commit: true)
             }
         }
-        // Move mode: banner at the top
         .overlay(alignment: .top) {
-            if let movingID = movingNodeID {
+            if let movingID = viewModel.movingNodeID {
                 moveBanner(for: movingID)
             }
         }
     }
 
+    // MARK: - Move Banner
+
     @ViewBuilder
     private func moveBanner(for movingID: UUID) -> some View {
-        let title = GradeTileTree.findNode(in: gradebook.root, id: movingID)?.title ?? ""
+        let title = GradeTileTree.findNode(in: viewModel.root, id: movingID)?.title ?? ""
         HStack(spacing: 8) {
             Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
                 .font(.system(size: 13, weight: .semibold))
@@ -1380,7 +1083,7 @@ struct GradebookDetailView: View {
             Spacer()
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    movingNodeID = nil
+                    viewModel.movingNodeID = nil
                 }
             } label: {
                 Text("Abbrechen")
@@ -1403,6 +1106,8 @@ struct GradebookDetailView: View {
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
+    // MARK: - Name Column
+
     private var nameColumnHeader: some View {
         ZStack(alignment: .topLeading) {
             Text("Schülername")
@@ -1422,43 +1127,40 @@ struct GradebookDetailView: View {
     private func studentNameBinding(for id: UUID) -> Binding<String> {
         Binding(
             get: {
-                gradebook.rows.first(where: { $0.id == id })?.studentName ?? ""
+                viewModel.rows.first(where: { $0.id == id })?.studentName ?? ""
             },
             set: { newValue in
-                guard let index = gradebook.rows.firstIndex(where: { $0.id == id }) else { return }
-                gradebook.rows[index].studentName = newValue
+                viewModel.updateRowStudentName(studentID: id, name: newValue)
             }
         )
     }
 
     private func beginStudentEditing(_ studentID: UUID) {
         endStudentEditing(commit: true)
-        editStudentOriginalName = gradebook.rows.first(where: { $0.id == studentID })?.studentName ?? ""
-        editingStudentID = studentID
+        viewModel.editStudentOriginalName = viewModel.rows.first(where: { $0.id == studentID })?.studentName ?? ""
+        viewModel.editingStudentID = studentID
         DispatchQueue.main.async {
             focusedStudentID = studentID
         }
     }
 
     private func endStudentEditing(commit: Bool) {
-        guard let studentID = editingStudentID else { return }
-        if let index = gradebook.rows.firstIndex(where: { $0.id == studentID }) {
-            if commit {
-                persistStudentName(studentID: studentID, fullName: gradebook.rows[index].studentName)
-                gradebook.rows[index].studentName = currentStudentName(studentID: studentID) ?? gradebook.rows[index].studentName
-            } else {
-                gradebook.rows[index].studentName = editStudentOriginalName
-            }
+        guard let studentID = viewModel.editingStudentID else { return }
+        if commit {
+            let currentName = viewModel.rows.first(where: { $0.id == studentID })?.studentName ?? ""
+            viewModel.renameStudent(studentID: studentID, fullName: currentName)
+        } else {
+            viewModel.updateRowStudentName(studentID: studentID, name: viewModel.editStudentOriginalName)
         }
         focusedStudentID = nil
-        editingStudentID = nil
-        editStudentOriginalName = ""
+        viewModel.editingStudentID = nil
+        viewModel.editStudentOriginalName = ""
     }
 
     private var nameColumnRows: some View {
         VStack(spacing: 0) {
-            ForEach(gradebook.rows) { row in
-                if editingStudentID == row.id {
+            ForEach(viewModel.rows) { row in
+                if viewModel.editingStudentID == row.id {
                     TextField("", text: studentNameBinding(for: row.id), prompt: Text("Name"))
                         .textFieldStyle(.plain)
                         .focused($focusedStudentID, equals: row.id)
@@ -1515,7 +1217,7 @@ struct GradebookDetailView: View {
             }
             
             Button {
-                showAddStudentsPopup = true
+                viewModel.showAddStudentsPopup = true
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 18, weight: .semibold))
@@ -1536,10 +1238,9 @@ struct GradebookDetailView: View {
 
     // MARK: - Leaf Columns
 
-    /// Leaf columns in left-to-right order (matches `columns` from GradeTileTree.columns).
     private var leafColumns: [LeafColumnInfo] {
         var result: [LeafColumnInfo] = []
-        collectLeaves(node: gradebook.root, result: &result)
+        collectLeaves(node: viewModel.root, result: &result)
         return result
     }
 
@@ -1552,25 +1253,8 @@ struct GradebookDetailView: View {
         }
     }
 
-    /// Execute an insertion action for the currently moving node.
-    private func executeInsertionAction(_ action: InsertionAction, draggedID: UUID) {
-        var root = gradebook.root
-        guard let moved = GradeTileTree.removeNode(root: &root, id: draggedID) else { return }
+    // MARK: - Container Background
 
-        switch action {
-        case .beforeSibling(let siblingID):
-            GradeTileTree.insertAtSameLevel(root: &root, siblingID: siblingID, node: moved, after: false)
-        case .afterSibling(let siblingID):
-            GradeTileTree.insertAtSameLevel(root: &root, siblingID: siblingID, node: moved, after: true)
-        case .appendToParent(let parentID):
-            GradeTileTree.insertAsChild(root: &root, parentID: parentID, node: moved)
-        }
-
-        gradebook.root = root
-        syncRowsToStructure()
-    }
-
-    /// Background color for a container rect based on level and color style.
     private func containerBackground(for node: GradeTileNode, level: Int) -> Color {
         let normalizedLevel = min(max(level, 0), 4)
         switch node.colorStyle {
@@ -1598,7 +1282,6 @@ struct GradebookDetailView: View {
         }
     }
 
-    /// Corner radius for nested tile containers, decreasing with depth.
     private func tileCornerRadius(for level: Int) -> CGFloat {
         switch min(max(level, 0), 4) {
         case 0: return 12
@@ -1608,7 +1291,8 @@ struct GradebookDetailView: View {
         }
     }
 
-    /// Sticky header content for the right table section.
+    // MARK: - Grid Header & Rows
+
     private var gridHeaderView: some View {
         let leaves = leafColumns
         let totalWidth = leaves.reduce(CGFloat(0)) { $0 + $1.width }
@@ -1616,9 +1300,8 @@ struct GradebookDetailView: View {
         let cache = nodeWidthCache
 
         return ZStack(alignment: .topLeading) {
-            // The recursive header stays structurally unchanged, but is rendered separately.
             headerNodeView(
-                node: gradebook.root,
+                node: viewModel.root,
                 level: 0,
                 isRoot: true,
                 parentIsCalculation: false,
@@ -1626,7 +1309,7 @@ struct GradebookDetailView: View {
                 widthCache: cache
             )
 
-            if let movingID = movingNodeID {
+            if let movingID = viewModel.movingNodeID {
                 insertionSlotsOverlay(
                     movingID: movingID,
                     headerTotalHeight: headerTotalH,
@@ -1637,13 +1320,12 @@ struct GradebookDetailView: View {
         .frame(width: totalWidth, height: headerTotalH)
     }
 
-    /// Scrollable row content for the right table section without the header.
     private var gridRowsView: some View {
         let leaves = leafColumns
         let totalWidth = leaves.reduce(CGFloat(0)) { $0 + $1.width }
 
         return VStack(spacing: 0) {
-            ForEach(gradebook.rows) { row in
+            ForEach(viewModel.rows) { row in
                 HStack(spacing: 0) {
                     ForEach(leaves, id: \.nodeID) { leaf in
                         let column = columns.first(where: { $0.nodeID == leaf.nodeID })
@@ -1660,12 +1342,10 @@ struct GradebookDetailView: View {
         .frame(width: totalWidth)
     }
 
-    private func onWeightChangeFor(_ nodeID: UUID, _ weight: Double) {
-        updateNodeWeightAndRedistributeSiblings(nodeID: nodeID, newWeight: weight)
-    }
+    // MARK: - Cells
 
     private func inputCell(rowID: UUID, nodeID: UUID) -> some View {
-        let displayValue = inputValue(rowID: rowID, nodeID: nodeID)
+        let displayValue = viewModel.inputValue(rowID: rowID, nodeID: nodeID)
 
         return ZStack {
             if let option = EmojiOption.fromStoredValue(displayValue) {
@@ -1687,14 +1367,14 @@ struct GradebookDetailView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            inputPopupDraft = displayValue
-            inputPopupCategory = .numbers
-            activeInputCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
+            viewModel.inputPopupDraft = displayValue
+            viewModel.inputPopupCategory = .numbers
+            viewModel.activeInputCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
         }
         .contextMenu {
             Button(role: .destructive) {
-                pendingClearCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
-                showClearCellDialog = true
+                viewModel.pendingClearCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
+                viewModel.showClearCellDialog = true
             } label: {
                 Label("Zelle leeren", systemImage: "trash")
             }
@@ -1702,8 +1382,8 @@ struct GradebookDetailView: View {
     }
 
     private func calculatedCell(row: StudentGradeRow, nodeID: UUID) -> some View {
-        let value = GradeTileTree.findNode(in: gradebook.root, id: nodeID).flatMap {
-            GradeTileTree.calculateValue(for: $0, row: row, roundingDecimals: gradebook.roundingDecimals)
+        let value = GradeTileTree.findNode(in: viewModel.root, id: nodeID).flatMap {
+            GradeTileTree.calculateValue(for: $0, row: row, roundingDecimals: viewModel.roundingDecimals)
         }
 
         let text = value.map { String(format: "%0.2f", $0) } ?? "—"
@@ -1735,16 +1415,7 @@ struct GradebookDetailView: View {
             .frame(width: lineWidth)
     }
 
-    private func inputValue(rowID: UUID, nodeID: UUID) -> String {
-        gradebook.rows.first(where: { $0.id == rowID })?.inputValues[nodeID] ?? ""
-    }
-
-
-    private func setInputValue(_ value: String, rowID: UUID, nodeID: UUID) {
-        guard let rowIndex = gradebook.rows.firstIndex(where: { $0.id == rowID }) else { return }
-        gradebook.rows[rowIndex].inputValues[nodeID] = value
-        persistGradeEntry(studentId: rowID, nodeID: nodeID, rawValue: value)
-    }
+    // MARK: - Helpers
 
     private func depth(of node: GradeTileNode) -> Int {
         if node.children.isEmpty { return 1 }
@@ -1792,7 +1463,7 @@ struct GradebookDetailView: View {
     }
 
     private func nodeDepth(for nodeID: UUID) -> Int {
-        nodeDepth(in: gradebook.root, targetID: nodeID, currentDepth: 0) ?? 0
+        nodeDepth(in: viewModel.root, targetID: nodeID, currentDepth: 0) ?? 0
     }
 
     private func nodeDepth(in node: GradeTileNode, targetID: UUID, currentDepth: Int) -> Int? {
@@ -1811,7 +1482,7 @@ struct GradebookDetailView: View {
     
     private func effectiveColorStyle(for nodeID: UUID) -> GradeTileColorStyle {
         resolveColorStyle(
-            in: gradebook.root,
+            in: viewModel.root,
             targetID: nodeID,
             inherited: .automatic
         ) ?? .automatic
@@ -1834,198 +1505,12 @@ struct GradebookDetailView: View {
         return nil
     }
 
-    private func syncRowsToStructure() {
-        let validInputIDs = Set(columns.filter { $0.type == .input }.map { $0.nodeID })
-        ensureGradeEntriesForInputs(validInputIDs)
-
-        for index in gradebook.rows.indices {
-            gradebook.rows[index].inputValues = gradebook.rows[index].inputValues.filter { validInputIDs.contains($0.key) }
-            for inputID in validInputIDs where gradebook.rows[index].inputValues[inputID] == nil {
-                gradebook.rows[index].inputValues[inputID] = ""
-            }
-        }
-    }
-
-    private func updateNodeWeight(nodeID: UUID, newWeight: Double) {
-        guard (0...100).contains(newWeight) else { return }
-
-        var root = gradebook.root
-        GradeTileTree.updateNode(root: &root, id: nodeID) { node in
-            node.weightPercent = roundedWeightPercent(newWeight)
-        }
-        gradebook.root = root
-    }
-
-    private func deleteNode(id: UUID) {
-        guard gradebook.root.id != id else { return }
-
-        let parentID = GradeTileTree.findParentID(root: gradebook.root, childID: id)
-        let inputIDsToRemove = inputNodeIDsForDeletion(nodeID: id)
-        var root = gradebook.root
-        guard GradeTileTree.removeNode(root: &root, id: id) != nil else { return }
-
-        gradebook.root = root
-
-        if !inputIDsToRemove.isEmpty {
-            removeGradeEntries(for: inputIDsToRemove)
-        }
-
-        if let parentID {
-            autoDistributeWeights(for: parentID)
-        }
-
-        syncRowsToStructure()
-
-        if movingNodeID == id {
-            movingNodeID = nil
-        }
-        if settingsTarget?.id == id {
-            settingsTarget = nil
-        }
-        if activeInputCell?.nodeID == id {
-            activeInputCell = nil
-        }
-    }
-
-    private func requestDeleteNode(for id: UUID) {
-        guard gradebook.root.id != id else { return }
-        pendingDeleteNodeID = id
-        showDeleteNodeDialog = true
-    }
-
-    private func updateNodeWeightAndRedistributeSiblings(nodeID: UUID, newWeight: Double) {
-        guard (0...100).contains(newWeight) else { return }
-        guard let parentID = GradeTileTree.findParentID(root: gradebook.root, childID: nodeID) else {
-            updateNodeWeight(nodeID: nodeID, newWeight: newWeight)
-            return
-        }
-        guard let parent = GradeTileTree.findNode(in: gradebook.root, id: parentID) else { return }
-
-        let childCount = parent.children.count
-        guard childCount > 0 else { return }
-
-        var root = gradebook.root
-        GradeTileTree.updateNode(root: &root, id: parentID) { node in
-            guard !node.children.isEmpty else { return }
-
-            if node.children.count == 1 {
-                node.children[0].weightPercent = 100
-                node.children[0].isWeightManuallySet = false
-                return
-            }
-
-            guard let targetIndex = node.children.firstIndex(where: { $0.id == nodeID }) else { return }
-            node.children[targetIndex].isWeightManuallySet = true
-
-            let otherManualTotal = node.children.indices
-                .filter { $0 != targetIndex && node.children[$0].isWeightManuallySet }
-                .reduce(0.0) { partialResult, index in
-                    partialResult + node.children[index].weightPercent
-                }
-            let clampedWeight = roundedWeightPercent(min(newWeight, max(0, 100 - otherManualTotal)))
-            node.children[targetIndex].weightPercent = clampedWeight
-
-            redistributeAutomaticWeights(in: &node.children)
-        }
-        gradebook.root = root
-    }
-
-    private func redistributeAutomaticWeights(in children: inout [GradeTileNode]) {
-        guard !children.isEmpty else { return }
-
-        if children.count == 1 {
-            children[0].weightPercent = 100
-            children[0].isWeightManuallySet = false
-            return
-        }
-
-        let manualIndices = children.indices.filter { children[$0].isWeightManuallySet }
-        let automaticIndices = children.indices.filter { !children[$0].isWeightManuallySet }
-        let manualTotal = roundedWeightPercent(
-            manualIndices.reduce(0.0) { partialResult, index in
-                partialResult + children[index].weightPercent
-            }
-        )
-
-        guard !automaticIndices.isEmpty else { return }
-
-        let remaining = max(0, roundedWeightPercent(100 - manualTotal))
-        let equalShare = roundedWeightPercent(remaining / Double(automaticIndices.count))
-
-        var distributedTotal = 0.0
-        for automaticIndex in automaticIndices.dropLast() {
-            children[automaticIndex].weightPercent = equalShare
-            distributedTotal += equalShare
-        }
-
-        if let lastAutomaticIndex = automaticIndices.last {
-            children[lastAutomaticIndex].weightPercent = roundedWeightPercent(remaining - distributedTotal)
-        }
-    }
-
-    private func addChild(to parentID: UUID, type: GradeTileType) {
-        var root = gradebook.root
-        let title = type == .calculation ? "Neuer Bereich" : "Neue Notenspalte"
-        
-        let child = GradeTileNode(title: title, type: type, weightPercent: 0)
-        GradeTileTree.insertAsChild(root: &root, parentID: parentID, node: child)
-        gradebook.root = root
-        
-        // Gewichte automatisch gleichverteilen
-        autoDistributeWeights(for: parentID)
-        
-        syncRowsToStructure()
-    }
-
-    private func addSiblingArea(after siblingID: UUID) {
-        guard let parentID = GradeTileTree.findParentID(root: gradebook.root, childID: siblingID) else { return }
-        
-        var root = gradebook.root
-        let sibling = GradeTileNode(title: "Neuer Bereich", type: .calculation, weightPercent: 0)
-        GradeTileTree.insertAtSameLevel(root: &root, siblingID: siblingID, node: sibling, after: true)
-        gradebook.root = root
-        
-        // Gewichte im gemeinsamen Elternknoten gleichverteilen
-        autoDistributeWeights(for: parentID)
-        
-        syncRowsToStructure()
-    }
-
-    private func autoDistributeWeights(for parentID: UUID) {
-        guard let parent = GradeTileTree.findNode(in: gradebook.root, id: parentID) else { return }
-        let count = parent.children.count
-        guard count > 0 else { return }
-
-        var root = gradebook.root
-        GradeTileTree.updateNode(root: &root, id: parentID) { node in
-            guard !node.children.isEmpty else { return }
-            for index in node.children.indices {
-                node.children[index].isWeightManuallySet = false
-            }
-            redistributeAutomaticWeights(in: &node.children)
-        }
-        gradebook.root = root
-    }
-
-    private func roundedWeightPercent(_ value: Double) -> Double {
-        let factor = 100.0
-        return (value * factor).rounded() / factor
-    }
-
-    private func updateNodeTitle(nodeID: UUID, newTitle: String) {
-        var root = gradebook.root
-        GradeTileTree.updateNode(root: &root, id: nodeID) { node in
-            node.title = newTitle
-        }
-        gradebook.root = root
-    }
-    
     private func width(for nodeID: UUID) -> CGFloat {
-        columnWidths[nodeID] ?? preferredWidth(for: nodeID)
+        viewModel.columnWidths[nodeID] ?? preferredWidth(for: nodeID)
     }
 
     private func preferredWidth(for nodeID: UUID) -> CGFloat {
-        guard let node = GradeTileTree.findNode(in: gradebook.root, id: nodeID) else {
+        guard let node = GradeTileTree.findNode(in: viewModel.root, id: nodeID) else {
             return defaultColumnWidth
         }
 
@@ -2062,7 +1547,7 @@ struct GradebookDetailView: View {
     }
 
     private func nodeHasCalculationParent(_ nodeID: UUID) -> Bool {
-        hasCalculationParent(in: gradebook.root, targetID: nodeID, parentIsCalculation: false) ?? false
+        hasCalculationParent(in: viewModel.root, targetID: nodeID, parentIsCalculation: false) ?? false
     }
 
     private func hasCalculationParent(
@@ -2086,1594 +1571,25 @@ struct GradebookDetailView: View {
 
         return nil
     }
-    
-    private func addStudent(named name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
 
-        let inputIDs = Set(columns.filter { $0.type == .input }.map { $0.nodeID })
-        let nextNumber = (schoolClass.students.map(\.studentNumber).max() ?? 0) + 1
-        let (firstName, lastName) = splitName(trimmed)
-        let student = Student(
-            firstName: firstName,
-            lastName: lastName,
-            studentNumber: nextNumber,
-            classId: schoolClass.id
-        )
-        schoolClass.students.append(student)
-
-        var values: [UUID: String] = [:]
-        for inputID in inputIDs {
-            values[inputID] = ""
-        }
-
-        gradebook.rows.append(
-            StudentGradeRow(
-                id: student.id,
-                studentName: student.fullName,
-                inputValues: values
-            )
-        )
-        createGradeEntries(for: student.id, inputIDs: inputIDs)
-    }
-
-    private func addStudents(names: [String]) {
-        let inputIDs = Set(columns.filter { $0.type == .input }.map { $0.nodeID })
-        var nextNumber = (schoolClass.students.map(\.studentNumber).max() ?? 0) + 1
-
-        for name in names {
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-
-            let (firstName, lastName) = splitName(trimmed)
-            let student = Student(
-                firstName: firstName,
-                lastName: lastName,
-                studentNumber: nextNumber,
-                classId: schoolClass.id
-            )
-            nextNumber += 1
-            schoolClass.students.append(student)
-
-            var values: [UUID: String] = [:]
-            for inputID in inputIDs {
-                values[inputID] = ""
-            }
-
-            gradebook.rows.append(
-                StudentGradeRow(
-                    id: student.id,
-                    studentName: student.fullName,
-                    inputValues: values
-                )
-            )
-            createGradeEntries(for: student.id, inputIDs: inputIDs)
-        }
-    }
-
-    private func persistGradeEntry(studentId: UUID, nodeID: UUID, rawValue: String) {
-        let descriptor = FetchDescriptor<GradeEntry>(
-            predicate: #Predicate {
-                $0.studentId == studentId &&
-                $0.semesterId == semesterId &&
-                $0.categoryKey == nodeID.uuidString
-            }
-        )
-
-        if let entry = (try? modelContext.fetch(descriptor))?.first {
-            entry.rawValue = rawValue
-            entry.value = parsedNumericValue(from: rawValue)
-        } else {
-            let entry = GradeEntry(
-                studentId: studentId,
-                semesterId: semesterId,
-                categoryKey: nodeID.uuidString,
-                rawValue: rawValue,
-                value: parsedNumericValue(from: rawValue)
-            )
-            modelContext.insert(entry)
-        }
-    }
-
-    private func parsedNumericValue(from rawValue: String) -> Double? {
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(normalized), (1...6).contains(value) else { return nil }
-        return value
-    }
-
-    private func ensureGradeEntriesForInputs(_ inputIDs: Set<UUID>) {
-        for row in gradebook.rows {
-            let descriptor = FetchDescriptor<GradeEntry>(
-                predicate: #Predicate { $0.studentId == row.id && $0.semesterId == semesterId }
-            )
-            let existing = (try? modelContext.fetch(descriptor)) ?? []
-            let existingKeys = Set(existing.map(\.categoryKey))
-
-            for inputID in inputIDs where !existingKeys.contains(inputID.uuidString) {
-                let raw = row.inputValues[inputID] ?? ""
-                let entry = GradeEntry(
-                    studentId: row.id,
-                    semesterId: semesterId,
-                    categoryKey: inputID.uuidString,
-                    rawValue: raw,
-                    value: parsedNumericValue(from: raw)
-                )
-                modelContext.insert(entry)
-            }
-        }
-    }
-
-    private func createGradeEntries(for studentId: UUID, inputIDs: Set<UUID>) {
-        for inputID in inputIDs {
-            let entry = GradeEntry(
-                studentId: studentId,
-                semesterId: semesterId,
-                categoryKey: inputID.uuidString,
-                rawValue: "",
-                value: nil
-            )
-            modelContext.insert(entry)
-        }
+    private func requestDeleteNode(for id: UUID) {
+        guard viewModel.root.id != id else { return }
+        viewModel.pendingDeleteNodeID = id
+        viewModel.showDeleteNodeDialog = true
     }
 
     private func requestDeleteStudent(id: UUID) {
-        pendingDeleteStudentID = id
-        showDeleteStudentDialog = true
-    }
-
-    private func deleteStudent(id: UUID) {
-        if editingStudentID == id {
-            endStudentEditing(commit: true)
-        }
-        gradebook.rows.removeAll { $0.id == id }
-
-        if let index = schoolClass.students.firstIndex(where: { $0.id == id }) {
-            let student = schoolClass.students[index]
-            schoolClass.students.remove(at: index)
-            modelContext.delete(student)
-        } else {
-            let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == id })
-            if let student = (try? modelContext.fetch(descriptor))?.first {
-                modelContext.delete(student)
-            }
-        }
-
-        let descriptor = FetchDescriptor<GradeEntry>(predicate: #Predicate { $0.studentId == id })
-        let entries = (try? modelContext.fetch(descriptor)) ?? []
-        for entry in entries {
-            modelContext.delete(entry)
-        }
-    }
-
-    private func inputNodeIDsForDeletion(nodeID: UUID) -> Set<UUID> {
-        guard let node = GradeTileTree.findNode(in: gradebook.root, id: nodeID) else { return [] }
-        return collectInputNodeIDs(node)
-    }
-
-    private func collectInputNodeIDs(_ node: GradeTileNode) -> Set<UUID> {
-        var result: Set<UUID> = []
-        if node.type == .input {
-            result.insert(node.id)
-        }
-        for child in node.children {
-            result.formUnion(collectInputNodeIDs(child))
-        }
-        return result
-    }
-
-    private func removeGradeEntries(for nodeIDs: Set<UUID>) {
-        let nodeKeys = Set(nodeIDs.map(\.uuidString))
-        let studentIDs = Set(schoolClass.students.map(\.id))
-        let descriptor = FetchDescriptor<GradeEntry>(predicate: #Predicate { $0.semesterId == semesterId })
-        let entries = (try? modelContext.fetch(descriptor)) ?? []
-        for entry in entries where studentIDs.contains(entry.studentId) && nodeKeys.contains(entry.categoryKey) {
-            modelContext.delete(entry)
-        }
-    }
-
-    private func persistStudentName(studentID: UUID, fullName: String) {
-        let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == studentID })
-        guard let student = (try? modelContext.fetch(descriptor))?.first else { return }
-        let trimmed = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let (firstName, lastName) = splitName(trimmed)
-        student.firstName = firstName
-        student.lastName = lastName
-    }
-
-    private func currentStudentName(studentID: UUID) -> String? {
-        let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == studentID })
-        return (try? modelContext.fetch(descriptor))?.first?.fullName
-    }
-
-    private func splitName(_ fullName: String) -> (String, String) {
-        let parts = fullName.split(separator: " ").map(String.init)
-        guard let first = parts.first else { return ("", "") }
-        let last = parts.dropFirst().joined(separator: " ")
-        return (first, last)
-    }
-}
-
-struct GradeInputCellTarget: Identifiable, Equatable {
-    let rowID: UUID
-    let nodeID: UUID
-
-    var id: String {
-        "\(rowID.uuidString)-\(nodeID.uuidString)"
-    }
-}
-
-enum GradeInputCategory: String, CaseIterable, Identifiable {
-    case numbers = "Zahlen"
-    case text = "Text"
-    case emojis = "Emojis"
-
-    var id: String { rawValue }
-}
-
-struct EmojiOption: Identifiable {
-    let id: String
-    let emoji: String
-    let symbol: String
-    let label: String
-
-    var token: String {
-        "[emoji:\(id)]"
-    }
-
-    static func fromStoredValue(_ value: String) -> EmojiOption? {
-        guard value.hasPrefix("[emoji:"), value.hasSuffix("]") else { return nil }
-        let idStart = value.index(value.startIndex, offsetBy: 7)
-        let id = String(value[idStart..<value.index(before: value.endIndex)])
-        return catalog.first(where: { $0.id == id })
-    }
-
-    var primaryColor: Color {
-        switch id {
-        case "happy": return .yellow
-        case "sad": return .gray
-        case "greenCheck", "thumbsUp", "star", "trophy": return .green
-        case "redCross", "thumbsDown", "warn", "minus": return .red
-        case "clock", "absent", "excused", "homework": return .orange
-        case "oral", "note", "idea", "eye": return .blue
-        default: return .teal
-        }
-    }
-
-    static let catalog: [EmojiOption] = [
-        // Smileys
-        EmojiOption(id: "happy", emoji: "", symbol: "face.smiling.fill", label: "Zufrieden"),
-        EmojiOption(id: "sad", emoji: "", symbol: "face.dashed", label: "Unzufrieden"),
-        // Bewertung positiv
-        EmojiOption(id: "greenCheck", emoji: "", symbol: "checkmark.circle.fill", label: "Erledigt"),
-        EmojiOption(id: "thumbsUp", emoji: "", symbol: "hand.thumbsup.fill", label: "Gut"),
-        EmojiOption(id: "star", emoji: "", symbol: "star.fill", label: "Sehr gut"),
-        EmojiOption(id: "trophy", emoji: "", symbol: "trophy.fill", label: "Ausgezeichnet"),
-        // Bewertung negativ
-        EmojiOption(id: "redCross", emoji: "", symbol: "xmark.circle.fill", label: "Nicht erledigt"),
-        EmojiOption(id: "thumbsDown", emoji: "", symbol: "hand.thumbsdown.fill", label: "Mangelhaft"),
-        EmojiOption(id: "warn", emoji: "", symbol: "exclamationmark.triangle.fill", label: "Achtung"),
-        EmojiOption(id: "minus", emoji: "", symbol: "minus.circle.fill", label: "Fehlend"),
-        // Status / Organisation
-        EmojiOption(id: "clock", emoji: "", symbol: "clock.fill", label: "Ausstehend"),
-        EmojiOption(id: "absent", emoji: "", symbol: "person.slash.fill", label: "Abwesend"),
-        EmojiOption(id: "excused", emoji: "", symbol: "envelope.fill", label: "Entschuldigt"),
-        EmojiOption(id: "homework", emoji: "", symbol: "doc.text.fill", label: "Hausaufgabe"),
-        // Unterricht
-        EmojiOption(id: "oral", emoji: "", symbol: "bubble.left.fill", label: "Mündlich"),
-        EmojiOption(id: "note", emoji: "", symbol: "pencil.circle.fill", label: "Notiz"),
-        EmojiOption(id: "idea", emoji: "", symbol: "lightbulb.fill", label: "Idee"),
-        EmojiOption(id: "eye", emoji: "", symbol: "eye.fill", label: "Beobachtung")
-    ]
-}
-
-struct GradeInputPopup: View {
-    @Binding var value: String
-    @Binding var selectedCategory: GradeInputCategory
-    let onClose: () -> Void
-    let onCommit: () -> Void
-
-    private let numberGrid = [
-        ["1", "2", "3"],
-        ["4", "5", "6"],
-        ["7", "8", "9"],
-        ["+-", "0", ","]
-    ]
-
-    private let textOptions = ["fehlt", "mündlich", "Hausaufgabe", "entschuldigt", "nachreichen", "ok"]
-    private let emojiOptions: [EmojiOption] = EmojiOption.catalog
-
-    @State private var showSignPicker = false
-    @State private var panelOffset: CGSize = .zero
-    @GestureState private var dragOffset: CGSize = .zero
-    @GestureState private var isDraggingPopup = false
-
-    var body: some View {
-        VStack(spacing: 16) {
-            header
-            inputPreview
-            categorySwitcher
-            categoryContent
-            actionRow
-        }
-        .padding(20)
-        .frame(maxWidth: 420)
-        .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(isDraggingPopup ? 0.10 : 0.16), radius: isDraggingPopup ? 14 : 26, y: isDraggingPopup ? 6 : 14)
-        .overlay {
-            if showSignPicker {
-                signPickerOverlay
-            }
-        }
-        .offset(x: panelOffset.width + dragOffset.width, y: panelOffset.height + dragOffset.height)
-    }
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            HStack {
-                Text("Notenfeld bearbeiten")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-            .highPriorityGesture(panelDragGesture)
-
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var inputPreview: some View {
-        HStack(spacing: 10) {
-            if let option = EmojiOption.fromStoredValue(value) {
-                Image(systemName: option.symbol)
-                    .font(.system(size: 24, weight: .semibold))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(option.primaryColor, option.primaryColor.opacity(0.3))
-            } else {
-                Text(value.isEmpty ? "Eingabe..." : value)
-                    .font(previewFont)
-                    .foregroundStyle(value.isEmpty ? .secondary : .primary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Button {
-                if EmojiOption.fromStoredValue(value) != nil {
-                    value = ""
-                } else {
-                    _ = value.popLast()
-                }
-            } label: {
-                Image(systemName: "delete.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color.black.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private var categorySwitcher: some View {
-        HStack(spacing: 8) {
-            ForEach(GradeInputCategory.allCases) { category in
-                Button {
-                    selectedCategory = category
-                } label: {
-                    Text(category.rawValue)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(selectedCategory == category ? .white : .primary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(selectedCategory == category ? Color.blue : Color.black.opacity(0.06))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var categoryContent: some View {
-        switch selectedCategory {
-        case .numbers:
-            VStack(spacing: 8) {
-                ForEach(numberGrid, id: \.self) { row in
-                    HStack(spacing: 8) {
-                        ForEach(row, id: \.self) { token in
-                            Button {
-                                handleNumberToken(token)
-                            } label: {
-                                Text(token)
-                                    .font(.system(size: 20, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.primary)
-                                    .frame(maxWidth: .infinity, minHeight: 46)
-                                    .background(Color.black.opacity(0.06))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-        case .text:
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
-                ForEach(textOptions, id: \.self) { option in
-                    Button {
-                        value = option
-                    } label: {
-                        Text(option)
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 40)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        case .emojis:
-            ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
-                    ForEach(emojiOptions) { option in
-                        Button {
-                            value = option.token
-                        } label: {
-                            Image(systemName: option.symbol)
-                                .font(.system(size: 22, weight: .bold))
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(option.primaryColor, option.primaryColor.opacity(0.3))
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                            .background(
-                                LinearGradient(
-                                    colors: emojiCardColors(for: option),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.45), lineWidth: 1)
-                            }
-                            .shadow(color: option.primaryColor.opacity(0.20), radius: 6, y: 3)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .frame(maxHeight: 220)
-        }
-    }
-
-    private func emojiCardColors(for option: EmojiOption) -> [Color] {
-        [option.primaryColor.opacity(0.18), option.primaryColor.opacity(0.06)]
-    }
-
-    private var previewFont: Font {
-        .system(size: 24, weight: .semibold, design: .default)
-    }
-
-    private var panelDragGesture: some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .global)
-            .updating($dragOffset) { value, state, _ in
-                state = value.translation
-            }
-            .updating($isDraggingPopup) { _, state, _ in
-                state = true
-            }
-            .onEnded { value in
-                panelOffset.width += value.translation.width
-                panelOffset.height += value.translation.height
-            }
-    }
-
-    private var actionRow: some View {
-        HStack(spacing: 10) {
-            Button("Leeren") {
-                value = ""
-            }
-            .font(.system(size: 14, weight: .semibold))
-            .buttonStyle(.bordered)
-
-            Spacer()
-
-            Button("Übernehmen") {
-                onCommit()
-            }
-            .font(.system(size: 14, weight: .semibold))
-            .buttonStyle(.borderedProminent)
-        }
-    }
-
-    private var signPickerOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.08)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .onTapGesture {
-                    showSignPicker = false
-                }
-
-            VStack(spacing: 10) {
-                Text("Vorzeichen wählen")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 12) {
-                    Button {
-                        value.append("+")
-                        showSignPicker = false
-                    } label: {
-                        Text("+")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
-                            .frame(width: 64, height: 48)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        value.append("-")
-                        showSignPicker = false
-                    } label: {
-                        Text("-")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
-                            .frame(width: 64, height: 48)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(16)
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.6), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.15), radius: 14, y: 8)
-            .frame(maxWidth: 220)
-        }
-        .padding(10)
-        .transition(.scale(scale: 0.95).combined(with: .opacity))
-    }
-
-    private func handleNumberToken(_ token: String) {
-        if token == "+-" {
-            showSignPicker = true
-        } else {
-            value.append(token)
-        }
-    }
-}
-
-/// Info about a single leaf column for width computation.
-private struct LeafColumnInfo {
-    let nodeID: UUID
-    let width: CGFloat
-}
-
-/// An insertion slot shown between siblings (or at the edges) when in move-mode.
-/// The user taps a slot to place the moving node at that position.
-private struct InsertionSlot: Identifiable {
-    let id: String            // unique key
-    let x: CGFloat            // x position in the grid
-    let y: CGFloat            // y position in the grid
-    let slotWidth: CGFloat    // how wide the indicator should be
-    let slotHeight: CGFloat   // how tall the indicator should be (full column height for vertical lines)
-    let action: InsertionAction
-    let isVertical: Bool      // true = vertical line between columns, false = horizontal
-}
-
-private enum InsertionAction {
-    /// Insert before the given sibling
-    case beforeSibling(UUID)
-    /// Insert after the given sibling
-    case afterSibling(UUID)
-    /// Append as last child of the given parent
-    case appendToParent(UUID)
-}
-
-private struct GridHorizontalContentOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-#if os(iOS)
-private struct SyncedHorizontalScrollView<Content: View>: UIViewRepresentable {
-    let showsHorizontalScrollIndicator: Bool
-    let onOffsetChange: (CGFloat) -> Void
-    let content: AnyView
-
-    init(
-        showsHorizontalScrollIndicator: Bool = false,
-        onOffsetChange: @escaping (CGFloat) -> Void,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.showsHorizontalScrollIndicator = showsHorizontalScrollIndicator
-        self.onOffsetChange = onOffsetChange
-        self.content = AnyView(content())
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onOffsetChange: onOffsetChange)
-    }
-
-    func makeUIView(context: Context) -> UIScrollView {
-        let scrollView = UIScrollView()
-        scrollView.delegate = context.coordinator
-        scrollView.showsHorizontalScrollIndicator = showsHorizontalScrollIndicator
-        scrollView.showsVerticalScrollIndicator = false
-        scrollView.alwaysBounceHorizontal = true
-        scrollView.bounces = true
-        scrollView.alwaysBounceVertical = false
-        scrollView.clipsToBounds = true
-
-        let host = context.coordinator.hostingController
-        host.view.backgroundColor = .clear
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(host.view)
-
-        NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            host.view.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor)
-        ])
-
-        return scrollView
-    }
-
-    func updateUIView(_ scrollView: UIScrollView, context: Context) {
-        context.coordinator.onOffsetChange = onOffsetChange
-        context.coordinator.hostingController.rootView = content
-        context.coordinator.hostingController.view.invalidateIntrinsicContentSize()
-    }
-
-    final class Coordinator: NSObject, UIScrollViewDelegate {
-        var onOffsetChange: (CGFloat) -> Void
-        let hostingController = UIHostingController(rootView: AnyView(EmptyView()))
-
-        init(onOffsetChange: @escaping (CGFloat) -> Void) {
-            self.onOffsetChange = onOffsetChange
-        }
-
-        func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            onOffsetChange(-scrollView.contentOffset.x)
-        }
-    }
-}
-#endif
-
-// MARK: - Header Tile View (Grid Cell Content)
-
-struct HeaderTileView: View {
-    let node: GradeTileNode
-    let isRoot: Bool
-    let level: Int
-    let parentIsCalculation: Bool
-    let width: CGFloat
-    let height: CGFloat
-    let isLeaf: Bool
-    let showWeightWarning: Bool
-    /// True when this tile is the one being moved
-    let isMoving: Bool
-
-    let onWeightChange: (Double) -> Void
-    let onAddInput: () -> Void
-    let onAddCalculation: () -> Void
-    let onAddSiblingArea: () -> Void
-    let onOpenSettings: () -> Void
-    let onAutoDistribute: () -> Void
-    let onDelete: () -> Void
-    let onTitleSubmit: (String) -> Void
-    let onStartMove: () -> Void
-    
-    @State private var showCustomWeightSheet = false
-    @State private var customWeightText = ""
-    @State private var isEditing = false
-    @State private var editingTitle = ""
-    @FocusState private var isTitleFieldFocused: Bool
-
-    /// Corner radius for leaf tiles, decreasing with depth.
-    private var leafCornerRadius: CGFloat {
-        switch min(max(level, 0), 4) {
-        case 0: return 12
-        case 1: return 10
-        case 2: return 8
-        default: return 6
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Content area pinned to top
-            HStack(spacing: 6) {
-                // Move handle — tap to enter move mode
-                if !isRoot {
-                    Button {
-                        onStartMove()
-                    } label: {
-                        Image(systemName: isMoving ? "arrow.up.and.down.and.arrow.left.and.right" : "line.3.horizontal")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(isMoving ? Color.blue : Color.Table.textSecondary.opacity(0.6))
-                            .frame(width: 24, height: 26)
-                            .background(isMoving ? Color.blue.opacity(0.12) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .layoutPriority(1)
-                }
-
-                if isEditing {
-                    TextField("", text: $editingTitle)
-                        .font(titleFont)
-                        .textFieldStyle(.plain)
-                        .foregroundStyle(Color.Table.textPrimary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .focused($isTitleFieldFocused)
-                        .onSubmit(commitTitleEdit)
-                        .onChange(of: isTitleFieldFocused) { _, isFocused in
-                            if !isFocused && isEditing {
-                                commitTitleEdit()
-                            }
-                        }
-                } else {
-                    Text(node.title)
-                        .font(titleFont)
-                        .foregroundStyle(Color.Table.textPrimary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .onTapGesture(count: 2) {
-                            editingTitle = node.title
-                            isEditing = true
-                            isTitleFieldFocused = true
-                        }
-                }
-
-                if parentIsCalculation {
-                    Menu {
-                        ForEach(WeightOption.availableWeights) { option in
-                            Button(option.label) {
-                                onWeightChange(option.value)
-                            }
-                        }
-                        Divider()
-                        Button("Eigene Eingabe…") {
-                            customWeightText = String(format: "%.2f", node.weightPercent).replacingOccurrences(of: ".00", with: "")
-                            showCustomWeightSheet = true
-                        }
-                    } label: {
-                        Text(weightLabel(node.weightPercent))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.blue)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .strokeBorder(Color.Table.border, lineWidth: 0.8)
-                            }
-                    }
-                    .layoutPriority(1)
-                }
-
-                if node.type == .calculation {
-                    Menu {
-                        if !isRoot {
-                            Button {
-                                onAddSiblingArea()
-                            } label: {
-                                Label("Bereich gleiche Ebene", systemImage: "folder.badge.plus")
-                            }
-                        }
-                        Button {
-                            onAddCalculation()
-                        } label: {
-                            Label("Bereich Ebene darunter", systemImage: "folder")
-                        }
-                        Divider()
-                        Button {
-                            onAddInput()
-                        } label: {
-                            Label("Notenspalte", systemImage: "tablecells")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color.Table.textSecondary)
-                            .padding(5)
-                            .background(Color.Table.hover)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .strokeBorder(Color.Table.border, lineWidth: 0.8)
-                            }
-                    }
-                    .layoutPriority(1)
-
-                    if showWeightWarning {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.orange)
-                            .layoutPriority(1)
-                    }
-                }
-
-                Button {
-                    onOpenSettings()
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.Table.textSecondary)
-                        .padding(5)
-                        .background(Color.Table.hover)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Color.Table.border, lineWidth: 0.8)
-                        }
-                }
-                .buttonStyle(.plain)
-                .layoutPriority(1)
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 8)
-            .frame(height: min(height, 38))
-
-            if height > 38 {
-                Spacer(minLength: 0)
-            }
-        }
-        .frame(width: width, height: height)
-        .background(tileBackground)
-        .clipShape(RoundedRectangle(cornerRadius: isLeaf ? leafCornerRadius : 0, style: .continuous))
-        // Leaf cells get a rounded border; parent title bars have no separator (container border suffices)
-        .overlay {
-            if isLeaf {
-                RoundedRectangle(cornerRadius: leafCornerRadius, style: .continuous)
-                    .strokeBorder(Color.Table.border.opacity(0.9), lineWidth: 0.8)
-            }
-        }
-        // Move mode: lifted appearance for the tile being moved
-        .overlay {
-            if isMoving {
-                RoundedRectangle(cornerRadius: isLeaf ? leafCornerRadius : 4, style: .continuous)
-                    .strokeBorder(Color.blue, lineWidth: 2.5)
-            }
-        }
-        .background {
-            if isMoving {
-                RoundedRectangle(cornerRadius: isLeaf ? leafCornerRadius : 4, style: .continuous)
-                    .fill(Color.blue.opacity(0.06))
-                    .shadow(color: Color.blue.opacity(0.3), radius: 12, y: 4)
-                    .scaleEffect(1.03)
-            }
-        }
-        .opacity(isMoving ? 0.85 : 1.0)
-        .contextMenu {
-            if !isRoot {
-                Button(role: .destructive) {
-                    onDelete()
-                } label: {
-                    Label("Löschen", systemImage: "trash")
-                }
-            }
-        }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                guard !isRoot else { return }
-                onDelete()
-            }
-        )
-        .sheet(isPresented: $showCustomWeightSheet) {
-            NavigationStack {
-                Form {
-                    Section("Prozentwert") {
-                        TextField("z. B. 33.33", text: $customWeightText)
-                            .keyboardType(.decimalPad)
-                    }
-                }
-                .navigationTitle("Eigene Eingabe")
-                .adaptiveNavigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Abbrechen") {
-                            showCustomWeightSheet = false
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Übernehmen") {
-                            let normalized = customWeightText.replacingOccurrences(of: ",", with: ".")
-                            if let value = Double(normalized), value >= 0, value <= 100 {
-                                onWeightChange(value)
-                            }
-                            showCustomWeightSheet = false
-                        }
-                    }
-                }
-            }
-            .presentationDetents([.height(220)])
-        }
-    }
-
-    private func commitTitleEdit() {
-        onTitleSubmit(editingTitle)
-        isEditing = false
-        isTitleFieldFocused = false
-    }
-
-    private var tileBackground: Color {
-        let normalizedLevel = min(max(level, 0), 4)
-        switch node.colorStyle {
-        case .automatic:
-            if node.type == .calculation {
-                switch normalizedLevel {
-                case 0:
-                    return Color.Table.headerBackground
-                case 1:
-                    return Color.Table.headerBackground.opacity(0.75)
-                case 2:
-                    return Color.Table.headerBackground.opacity(0.55)
-                default:
-                    return Color.Table.headerBackground.opacity(0.40)
-                }
-            } else {
-                switch normalizedLevel {
-                case 0:
-                    return Color.Table.cellBackground
-                case 1:
-                    return Color.Table.cellBackground.opacity(0.95)
-                default:
-                    return Color.Table.cellBackground.opacity(0.90)
-                }
-            }
-        case .slate:
-            return Color(red: 0.92, green: 0.93, blue: 0.95)
-        case .blue:
-            return Color(red: 0.88, green: 0.93, blue: 0.99)
-        case .green:
-            return Color(red: 0.89, green: 0.96, blue: 0.91)
-        case .orange:
-            return Color(red: 0.99, green: 0.93, blue: 0.86)
-        case .red:
-            return Color(red: 0.99, green: 0.90, blue: 0.90)
-        }
-    }
-
-    private var titleFont: Font {
-        let normalizedLevel = min(max(level, 0), 3)
-        switch normalizedLevel {
-        case 0:
-            return .system(size: 13, weight: .bold)
-        case 1:
-            return .system(size: 13, weight: .semibold)
-        default:
-            return .system(size: 12, weight: .medium)
-        }
-    }
-
-    private func weightLabel(_ value: Double) -> String {
-        if value.rounded() == value {
-            return "\(Int(value))%"
-        }
-        return String(format: "%.2f%%", value)
-    }
-}
-
-struct TileSettingsTarget: Identifiable {
-    let id: UUID
-}
-
-struct AddStudentTopPopup: View {
-    @Binding var name: String
-    let onCancel: () -> Void
-    let onAdd: () -> Void
-    
-    var body: some View {
-        GeometryReader { geometry in
-            let popupWidth = min(700, geometry.size.width * 0.66)
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Schüler hinzufügen")
-                    .font(.system(size: 15, weight: .semibold))
-
-                TextField("z. B. Anna Müller", text: $name)
-                    .textFieldStyle(.roundedBorder)
-
-                HStack {
-                    Button("Abbrechen", action: onCancel)
-                        .buttonStyle(.bordered)
-
-                    Spacer()
-
-                    Button("Hinzufügen", action: onAdd)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .padding(22)
-            .background(Color.secondarySystemGroupedBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .strokeBorder(Color.gray.opacity(0.2), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.12), radius: 25, y: 10)
-            .frame(width: popupWidth)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
-    }
-}
-
-// MARK: - Add Students Popup (CSV Import)
-
-struct AddStudentsPopup: View {
-    let onAddSingle: () -> Void
-    let onImportStudents: ([String]) -> Void
-    let onClose: () -> Void
-
-    @State private var showFilePicker = false
-    @State private var csvPreviewNames: [String] = []
-    @State private var showPreview = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        GeometryReader { geometry in
-            let popupWidth = min(500, geometry.size.width * 0.7)
-
-            VStack(spacing: 0) {
-                // Header
-                HStack {
-                    Text("Schüler hinzufügen")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-
-                    Spacer()
-
-                    Button { onClose() } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 22)
-                .padding(.top, 22)
-                .padding(.bottom, 16)
-
-                if showPreview {
-                    csvPreviewView
-                } else {
-                    optionsView
-                }
-            }
-            .background(Color.secondarySystemGroupedBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(Color.gray.opacity(0.2), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.15), radius: 30, y: 12)
-            .frame(width: popupWidth)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
-        .fileImporter(
-            isPresented: $showFilePicker,
-            allowedContentTypes: [UTType.commaSeparatedText, UTType.plainText],
-            allowsMultipleSelection: false
-        ) { result in
-            handleFileImport(result)
-        }
-    }
-
-    private var optionsView: some View {
-        VStack(spacing: 12) {
-            // Einzeln hinzufügen
-            Button {
-                onClose()
-                onAddSingle()
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "person.badge.plus")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.blue)
-                        .frame(width: 40, height: 40)
-                        .background(Color.blue.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Einzeln hinzufügen")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("Einen Schüler manuell eingeben")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(14)
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.gray.opacity(0.15), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-
-            // CSV Import
-            Button {
-                showFilePicker = true
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "tablecells")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.green)
-                        .frame(width: 40, height: 40)
-                        .background(Color.green.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("CSV-Datei importieren")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("Klassenliste aus einer .csv-Datei laden")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(14)
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.gray.opacity(0.15), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-
-            if let errorMessage {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(errorMessage)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 4)
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.bottom, 22)
-    }
-
-    private var csvPreviewView: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Text("\(csvPreviewNames.count) Schüler erkannt")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(Array(csvPreviewNames.enumerated()), id: \.offset) { index, name in
-                        HStack {
-                            Text("\(index + 1).")
-                                .font(.system(size: 13, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 30, alignment: .trailing)
-                            Text(name)
-                                .font(.system(size: 14, weight: .medium))
-                            Spacer()
-                        }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                        if index < csvPreviewNames.count - 1 {
-                            Divider()
-                        }
-                    }
-                }
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.gray.opacity(0.15), lineWidth: 1)
-                }
-            }
-            .frame(maxHeight: 250)
-
-            HStack(spacing: 12) {
-                Button("Abbrechen") {
-                    showPreview = false
-                    csvPreviewNames = []
-                }
-                .buttonStyle(.bordered)
-
-                Spacer()
-
-                Button("Alle importieren") {
-                    onImportStudents(csvPreviewNames)
-                    onClose()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.bottom, 22)
-    }
-
-    private func handleFileImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-
-            guard url.startAccessingSecurityScopedResource() else {
-                errorMessage = "Zugriff auf die Datei wurde verweigert."
-                return
-            }
-            defer { url.stopAccessingSecurityScopedResource() }
-
-            do {
-                let content = try String(contentsOf: url, encoding: .utf8)
-                let names = parseCSV(content)
-                if names.isEmpty {
-                    errorMessage = "Keine Schülernamen in der Datei gefunden."
-                } else {
-                    errorMessage = nil
-                    csvPreviewNames = names
-                    showPreview = true
-                }
-            } catch {
-                errorMessage = "Datei konnte nicht gelesen werden."
-            }
-
-        case .failure:
-            errorMessage = "Datei konnte nicht geöffnet werden."
-        }
-    }
-
-    private func parseCSV(_ content: String) -> [String] {
-        let lines = content.components(separatedBy: .newlines)
-        var names: [String] = []
-
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-
-            let columns = trimmed.components(separatedBy: CharacterSet(charactersIn: ",;\t"))
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
-
-            // Erste Zeile als Header überspringen, wenn sie typische Header-Begriffe enthält
-            if index == 0 {
-                let headerKeywords = ["name", "vorname", "nachname", "schüler", "schuelername", "firstname", "lastname", "student"]
-                let lowerLine = trimmed.lowercased()
-                if headerKeywords.contains(where: { lowerLine.contains($0) }) {
-                    continue
-                }
-            }
-
-            // Heuristik: Wenn 2+ Spalten, versuche Nachname + Vorname zusammenzufügen
-            if columns.count >= 2 {
-                let first = columns[0]
-                let second = columns[1]
-
-                if !first.isEmpty && !second.isEmpty {
-                    // Prüfe ob erste Spalte eine Nummer ist (z.B. laufende Nr.)
-                    if Int(first) != nil {
-                        // Erste Spalte ist eine Nummer -> Name ab Spalte 2
-                        if columns.count >= 3 && !columns[2].isEmpty {
-                            names.append("\(second) \(columns[2])")
-                        } else {
-                            names.append(second)
-                        }
-                    } else {
-                        names.append("\(first) \(second)")
-                    }
-                } else if !first.isEmpty {
-                    names.append(first)
-                }
-            } else if columns.count == 1 && !columns[0].isEmpty {
-                names.append(columns[0])
-            }
-        }
-
-        return names
-    }
-}
-
-struct FloatingTileSettingsPanel: View {
-    let node: GradeTileNode
-    @Binding var columnWidth: CGFloat
-    let showColumnWidthSlider: Bool
-    let minColumnWidth: CGFloat
-    let maxColumnWidth: CGFloat
-    let onSave: (String, GradeTileColorStyle) -> Void
-    let onAutoDistribute: () -> Void
-    let onClose: () -> Void
-
-    @State private var titleText: String
-    @State private var colorStyle: GradeTileColorStyle
-    @State private var panelOffset: CGSize = .zero
-    @GestureState private var dragOffset: CGSize = .zero
-    @GestureState private var isDraggingPanel = false
-
-    init(
-        node: GradeTileNode,
-        columnWidth: Binding<CGFloat>,
-        showColumnWidthSlider: Bool,
-        minColumnWidth: CGFloat,
-        maxColumnWidth: CGFloat,
-        onSave: @escaping (String, GradeTileColorStyle) -> Void,
-        onAutoDistribute: @escaping () -> Void,
-        onClose: @escaping () -> Void
-    ) {
-        self.node = node
-        self._columnWidth = columnWidth
-        self.showColumnWidthSlider = showColumnWidthSlider
-        self.minColumnWidth = minColumnWidth
-        self.maxColumnWidth = maxColumnWidth
-        self.onSave = onSave
-        self.onAutoDistribute = onAutoDistribute
-        self.onClose = onClose
-        _titleText = State(initialValue: node.title)
-        _colorStyle = State(initialValue: node.colorStyle)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Ziehleiste
-            dragHandle
-            
-            Divider()
-            
-            // Inhalt
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Titel
-                    sectionView(title: "Titel") {
-                        TextField("Titel", text: $titleText)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit {
-                                onSave(titleText, colorStyle)
-                            }
-                    }
-                    
-                    // Spaltenbreite
-                    if showColumnWidthSlider {
-                        sectionView(title: "Spaltenbreite") {
-                            HStack {
-                                Text("\(Int(columnWidth)) pt")
-                                    .font(.system(size: 13, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 50, alignment: .trailing)
-                                Slider(value: $columnWidth, in: minColumnWidth...maxColumnWidth, step: 5)
-                            }
-                        }
-                    }
-                    
-                    // Farbpalette
-                    sectionView(title: "Farbe") {
-                        HStack(spacing: 8) {
-                            ForEach(GradeTileColorStyle.allCases, id: \.self) { style in
-                                Button {
-                                    colorStyle = style
-                                    onSave(titleText, colorStyle)
-                                } label: {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(colorPreview(for: style))
-                                        .frame(width: 32, height: 32)
-                                        .overlay {
-                                            if colorStyle == style {
-                                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                    .strokeBorder(Color.blue, lineWidth: 2.5)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    
-                    // Gewichtung
-                    if node.type == .calculation && !node.children.isEmpty {
-                        sectionView(title: "Gewichtung") {
-                            Button {
-                                onAutoDistribute()
-                            } label: {
-                                Text("Gleichverteilen")
-                                    .font(.system(size: 13, weight: .medium))
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                    
-                    // Sichern-Button
-                    Button {
-                        onSave(titleText, colorStyle)
-                        onClose()
-                    } label: {
-                        Text("Sichern & Schließen")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(16)
-            }
-        }
-        .frame(width: 320)
-        .frame(maxHeight: 420)
-        .background(Color.secondarySystemGroupedBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(isDraggingPanel ? 0.12 : 0.2), radius: isDraggingPanel ? 12 : 20, y: isDraggingPanel ? 4 : 8)
-        .offset(x: panelOffset.width + dragOffset.width,
-                y: panelOffset.height + dragOffset.height)
-    }
-    
-    private var dragHandle: some View {
-        HStack(spacing: 12) {
-            HStack {
-                Text("Einstellungen")
-                    .font(.system(size: 14, weight: .semibold))
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-            .highPriorityGesture(panelDragGesture)
-
-            Button {
-                onSave(titleText, colorStyle)
-                onClose()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.secondarySystemGroupedBackground)
-    }
-    
-    private var panelDragGesture: some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .global)
-            .updating($dragOffset) { value, state, _ in
-                state = value.translation
-            }
-            .updating($isDraggingPanel) { _, state, _ in
-                state = true
-            }
-            .onEnded { value in
-                panelOffset.width += value.translation.width
-                panelOffset.height += value.translation.height
-            }
-    }
-
-    private func sectionView<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            content()
-        }
-    }
-
-    private func colorPreview(for style: GradeTileColorStyle) -> Color {
-        switch style {
-        case .automatic:
-            return node.type == .calculation ? Color(white: 0.965) : Color(white: 0.975)
-        case .slate:
-            return Color(red: 0.92, green: 0.93, blue: 0.95)
-        case .blue:
-            return Color(red: 0.88, green: 0.93, blue: 0.99)
-        case .green:
-            return Color(red: 0.89, green: 0.96, blue: 0.91)
-        case .orange:
-            return Color(red: 0.99, green: 0.93, blue: 0.86)
-        case .red:
-            return Color(red: 0.99, green: 0.90, blue: 0.90)
-        }
+        viewModel.pendingDeleteStudentID = id
+        viewModel.showDeleteStudentDialog = true
     }
 }
 
 
-
-private enum MockClassData {
-    static func seed() -> (classes: [SchoolClass], gradebooksByClassID: [UUID: ClassGradebooksState]) {
-        let classes = [
-            SchoolClass(name: "10b", subject: "Deutsch", schoolYear: "2025/2026"),
-            SchoolClass(name: "5a", subject: "Mathematik", schoolYear: "2025/2026")
-        ]
-
-        let class10bRows = [
-            StudentGradeRow(studentName: "Anna Müller"),
-            StudentGradeRow(studentName: "Ben Schmidt"),
-            StudentGradeRow(studentName: "Clara Weber"),
-            StudentGradeRow(studentName: "David Fischer"),
-            StudentGradeRow(studentName: "Emilia Wagner"),
-            StudentGradeRow(studentName: "Felix Neumann"),
-            StudentGradeRow(studentName: "Greta Hoffmann"),
-            StudentGradeRow(studentName: "Henry Becker")
-        ]
-
-        let class5aRows = [
-            StudentGradeRow(studentName: "Lina Koch"),
-            StudentGradeRow(studentName: "Noah Richter"),
-            StudentGradeRow(studentName: "Mia Wolf"),
-            StudentGradeRow(studentName: "Paul Krüger"),
-            StudentGradeRow(studentName: "Sofia Hartmann"),
-            StudentGradeRow(studentName: "Tom Schulz")
-        ]
-
-        let state10b = ClassGradebookState(root: GradeTileTree.standardRoot(), rows: class10bRows)
-        let state5a = ClassGradebookState(root: GradeTileTree.standardRoot(), rows: class5aRows)
-
-        let tab10b = GradebookTabState(schoolYear: classes[0].schoolYear, gradebook: state10b)
-        let tab5a = GradebookTabState(schoolYear: classes[1].schoolYear, gradebook: state5a)
-
-        var gradebooksByClassID: [UUID: ClassGradebooksState] = [
-            classes[0].id: ClassGradebooksState(tabs: [tab10b], selectedTabID: tab10b.id),
-            classes[1].id: ClassGradebooksState(tabs: [tab5a], selectedTabID: tab5a.id)
-        ]
-
-        for id in gradebooksByClassID.keys {
-            if var classState = gradebooksByClassID[id] {
-                for tabIndex in classState.tabs.indices {
-                    let inputIDs = Set(GradeTileTree.columns(from: classState.tabs[tabIndex].gradebook.root).filter { $0.type == .input }.map { $0.nodeID })
-                    for rowIndex in classState.tabs[tabIndex].gradebook.rows.indices {
-                        for inputID in inputIDs {
-                            classState.tabs[tabIndex].gradebook.rows[rowIndex].inputValues[inputID] = ""
-                        }
-                    }
-                }
-                gradebooksByClassID[id] = classState
-            }
-        }
-
-        return (classes, gradebooksByClassID)
-    }
-}
+// Types extracted to GradebookViewHelpers.swift, component views extracted to Features/GradeManagement/Views/
 
 #Preview("Klassen") {
     NavigationStack {
         GradeBookMainView()
     }
-    .modelContainer(for: [SchoolClass.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
+    .modelContainer(for: [SchoolClass.self, GradebookTabEntity.self, GradebookNodeEntity.self, GradebookRowEntity.self, GradebookCellValueEntity.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
 }

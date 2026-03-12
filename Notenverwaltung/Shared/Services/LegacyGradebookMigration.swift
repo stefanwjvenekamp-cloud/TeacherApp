@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 
 enum LegacyGradebookMigration {
+    @MainActor
     static func migrateIfNeeded(in context: ModelContext) -> Bool {
         guard let legacyStore = loadLegacyStore() else { return false }
         if legacyStore.classes.isEmpty { return false }
@@ -17,7 +18,11 @@ enum LegacyGradebookMigration {
         for (classId, state) in legacyStore.gradebooks {
             guard let schoolClass = classMap[classId] else { continue }
 
-            for (index, row) in state.tabs.first?.gradebook.rows.enumerated() ?? [].enumerated() {
+            let allRows = state.tabs.flatMap(\.gradebook.rows)
+            let uniqueRows = Dictionary(uniqueKeysWithValues: allRows.map { ($0.id, $0) }).values
+                .sorted { $0.studentName.localizedStandardCompare($1.studentName) == .orderedAscending }
+
+            for (index, row) in uniqueRows.enumerated() {
                 let (firstName, lastName) = splitName(row.studentName)
                 let student = Student(
                     firstName: firstName,
@@ -29,26 +34,17 @@ enum LegacyGradebookMigration {
                 schoolClass.students.append(student)
             }
 
-            for tab in state.tabs {
-                let inputIDs = Set(GradeTileTree.columns(from: tab.gradebook.root).filter { $0.type == .input }.map { $0.nodeID })
-                for row in tab.gradebook.rows {
-                    for inputID in inputIDs {
-                        let raw = row.inputValues[inputID] ?? ""
-                        let entry = GradeEntry(
-                            studentId: row.id,
-                            semesterId: tab.schoolYear,
-                            categoryKey: inputID.uuidString,
-                            rawValue: raw,
-                            value: parsedNumericValue(from: raw)
-                        )
-                        context.insert(entry)
-                    }
-                }
+            GradebookRepository.bootstrapTabsIfNeeded(for: schoolClass, state: state, in: context)
+            let tabsByID = Dictionary(uniqueKeysWithValues: GradebookRepository.tabs(for: schoolClass).map { ($0.id, $0) })
+            for tabState in state.tabs {
+                guard let tab = tabsByID[tabState.id] else { continue }
+                GradebookRepository.bootstrapNodesIfNeeded(for: tab, root: tabState.gradebook.root, in: context)
+                GradebookRepository.bootstrapRowsIfNeeded(for: tab, state: tabState.gradebook, schoolClass: schoolClass, in: context)
+                GradebookRepository.bootstrapCellValuesIfNeeded(for: tab, state: tabState.gradebook, in: context)
             }
-
-            GradebookSnapshotStore.save(state: state, for: classId, in: context)
         }
 
+        try? context.save()
         deleteLegacyFile()
         return true
     }
@@ -70,13 +66,6 @@ enum LegacyGradebookMigration {
 
     private static func deleteLegacyFile() {
         try? FileManager.default.removeItem(at: legacyFileURL)
-    }
-
-    private static func parsedNumericValue(from rawValue: String) -> Double? {
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(normalized), (1...6).contains(value) else { return nil }
-        return value
     }
 
     private static func splitName(_ fullName: String) -> (String, String) {

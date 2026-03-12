@@ -18,6 +18,10 @@ struct NotenverwaltungApp: App {
             Term.self,
             Course.self,
             SchoolClass.self,
+            GradebookTabEntity.self,
+            GradebookNodeEntity.self,
+            GradebookRowEntity.self,
+            GradebookCellValueEntity.self,
             Student.self,
             Assessment.self,
             GradeEntry.self,
@@ -29,14 +33,54 @@ struct NotenverwaltungApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            // Schema migration failed — delete the old store and retry
+            let storeURL = modelConfiguration.url
+            let storeDir = storeURL.deletingLastPathComponent()
+            let baseName = storeURL.lastPathComponent  // e.g. "default.store"
+            for suffix in ["", "-wal", "-shm"] {
+                let fileURL = storeDir.appendingPathComponent(baseName + suffix)
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+
+            do {
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create ModelContainer: \(error)")
+            }
         }
     }()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MigrationGateView {
+                ContentView()
+            }
         }
         .modelContainer(sharedModelContainer)
     }
 }
+struct MigrationGateView<Content: View>: View {
+    @Environment(\.modelContext) private var modelContext
+    @State private var migrationComplete = false
+
+    let content: () -> Content
+
+    init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        Group {
+            if migrationComplete {
+                content()
+            } else {
+                ProgressView("Daten werden vorbereitet…")
+                    .task {
+                        GradebookMigrationService.migrateIfNeeded(context: modelContext)
+                        migrationComplete = true
+                    }
+            }
+        }
+    }
+}
+

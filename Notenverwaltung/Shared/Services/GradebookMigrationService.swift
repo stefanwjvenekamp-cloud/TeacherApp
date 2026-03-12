@@ -1,103 +1,48 @@
-import Foundation
 import SwiftData
 
-// MARK: - Legacy Types (for migration only)
-
-private struct SavedClassData: Codable {
-    let id: UUID
-    let name: String
-    let subject: String
-    let schoolYear: String
-}
-
-private struct AppGradebookStore: Codable {
-    var classes: [SavedClassData]
-    var gradebooks: [UUID: ClassGradebooksState]
-
-    private enum CodingKeys: String, CodingKey {
-        case classes, gradebookEntries
-    }
-
-    private struct GradebookEntry: Codable {
-        let key: UUID
-        let value: ClassGradebooksState
-    }
-
-    private struct LegacyGradebookEntry: Codable {
-        let key: UUID
-        let value: ClassGradebookState
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(classes, forKey: .classes)
-        let entries = gradebooks.map { GradebookEntry(key: $0.key, value: $0.value) }
-        try container.encode(entries, forKey: .gradebookEntries)
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        classes = try container.decode([SavedClassData].self, forKey: .classes)
-
-        if let entries = try? container.decode([GradebookEntry].self, forKey: .gradebookEntries) {
-            gradebooks = Dictionary(uniqueKeysWithValues: entries.map { ($0.key, $0.value) })
-            return
-        }
-
-        let legacyEntries = try container.decode([LegacyGradebookEntry].self, forKey: .gradebookEntries)
-        let schoolYearByClassID = Dictionary(uniqueKeysWithValues: classes.map { ($0.id, $0.schoolYear) })
-        gradebooks = Dictionary(uniqueKeysWithValues: legacyEntries.map { entry in
-            let schoolYear = schoolYearByClassID[entry.key] ?? "Schuljahr"
-            let tab = GradebookTabState(schoolYear: schoolYear, gradebook: entry.value)
-            return (entry.key, ClassGradebooksState(tabs: [tab], selectedTabID: tab.id))
-        })
-    }
-}
-
-// MARK: - Migration Service
-
 enum GradebookMigrationService {
-
-    private static var legacyFileURL: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return docs.appendingPathComponent("gradebook_data.json")
+    @discardableResult
+    @MainActor
+    static func migrateIfNeeded(context: ModelContext) -> Bool {
+        let didLegacyMigration = LegacyGradebookMigration.migrateIfNeeded(in: context)
+        let didSnapshotMigration = migrateSnapshotsIfNeeded(in: context)
+        return didLegacyMigration || didSnapshotMigration
     }
 
-    /// Migrates legacy JSON gradebook data into SwiftData. Returns true if migration was performed.
-    @discardableResult
-    static func migrateIfNeeded(context: ModelContext) -> Bool {
-        let fileURL = legacyFileURL
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return false
-        }
+    @MainActor
+    private static func migrateSnapshotsIfNeeded(in context: ModelContext) -> Bool {
+        let descriptor = FetchDescriptor<GradebookSnapshot>()
+        let snapshots = (try? context.fetch(descriptor)) ?? []
+        guard !snapshots.isEmpty else { return false }
 
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let store = try JSONDecoder().decode(AppGradebookStore.self, from: data)
+        let classesDescriptor = FetchDescriptor<SchoolClass>()
+        let classes = (try? context.fetch(classesDescriptor)) ?? []
+        let classesByID = Dictionary(uniqueKeysWithValues: classes.map { ($0.id, $0) })
+        var migratedAny = false
 
-            for savedClass in store.classes {
-                let schoolClass = SchoolClass(
-                    name: savedClass.name,
-                    subject: savedClass.subject,
-                    schoolYear: savedClass.schoolYear
-                )
-                schoolClass.id = savedClass.id
+        for snapshot in snapshots {
+            guard let schoolClass = classesByID[snapshot.classId],
+                  let state = GradebookSnapshotStore.decodeState(from: snapshot.data)
+            else { continue }
 
-                if let gradebooksState = store.gradebooks[savedClass.id] {
-                    schoolClass.encodeGradebooksState(gradebooksState)
-                }
+            GradebookRepository.bootstrapTabsIfNeeded(for: schoolClass, state: state, in: context)
 
-                context.insert(schoolClass)
+            let tabsByID = Dictionary(uniqueKeysWithValues: GradebookRepository.tabs(for: schoolClass).map { ($0.id, $0) })
+            for tabState in state.tabs {
+                guard let tab = tabsByID[tabState.id] else { continue }
+                GradebookRepository.bootstrapNodesIfNeeded(for: tab, root: tabState.gradebook.root, in: context)
+                GradebookRepository.bootstrapRowsIfNeeded(for: tab, state: tabState.gradebook, schoolClass: schoolClass, in: context)
+                GradebookRepository.bootstrapCellValuesIfNeeded(for: tab, state: tabState.gradebook, in: context)
+                migratedAny = true
             }
 
-            try context.save()
-            try FileManager.default.removeItem(at: fileURL)
-
-            print("[Migration] Successfully migrated \(store.classes.count) classes from JSON to SwiftData.")
-            return true
-        } catch {
-            print("[Migration] Failed: \(error)")
-            return false
+            context.delete(snapshot)
         }
+
+        if migratedAny {
+            try? context.save()
+        }
+
+        return migratedAny
     }
 }
