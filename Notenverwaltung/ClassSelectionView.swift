@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
@@ -14,19 +15,11 @@ import AppKit
 #endif
 
 struct GradeBookMainView: View {
-    @State private var classes: [SchoolClass]
-    @State private var gradebooksByClassID: [UUID: ClassGradebooksState]
-
-    init() {
-        if let saved = GradebookPersistence.load() {
-            _classes = State(initialValue: saved.classes)
-            _gradebooksByClassID = State(initialValue: saved.gradebooks)
-        } else {
-            let seed = MockClassData.seed()
-            _classes = State(initialValue: seed.classes)
-            _gradebooksByClassID = State(initialValue: seed.gradebooksByClassID)
-        }
-    }
+    @Environment(\.modelContext) private var modelContext
+    @State private var classes: [SchoolClass] = []
+    @State private var gradebooksByClassID: [UUID: ClassGradebooksState] = [:]
+    @State private var hasLoaded = false
+    @State private var isPersisting = false
 
     var body: some View {
         ZStack {
@@ -60,8 +53,12 @@ struct GradeBookMainView: View {
         }
         .navigationTitle("TeacherApp")
         .adaptiveNavigationBarTitleDisplayMode(.large)
+        .task {
+            loadDataIfNeeded()
+        }
         .onChange(of: gradebooksByClassID) {
-            persistData()
+            guard hasLoaded, !isPersisting else { return }
+            persistSnapshots()
         }
     }
 
@@ -105,8 +102,173 @@ struct GradeBookMainView: View {
         return selectedTab?.gradebook.rows.count ?? 0
     }
 
-    private func persistData() {
-        GradebookPersistence.save(classes: classes, gradebooks: gradebooksByClassID)
+    private func loadDataIfNeeded() {
+        guard !hasLoaded else { return }
+        hasLoaded = true
+
+        let existingClasses = fetchClasses()
+        if existingClasses.isEmpty {
+            let migrated = LegacyGradebookMigration.migrateIfNeeded(in: modelContext)
+            if !migrated {
+                seedInitialData()
+            }
+        }
+
+        classes = fetchClasses()
+        loadGradebooksForClasses()
+    }
+
+    private func fetchClasses() -> [SchoolClass] {
+        let descriptor = FetchDescriptor<SchoolClass>(
+            sortBy: [SortDescriptor(\.name, order: .forward)]
+        )
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private func loadGradebooksForClasses() {
+        var map: [UUID: ClassGradebooksState] = [:]
+
+        for schoolClass in classes {
+            let snapshotState = GradebookSnapshotStore.load(for: schoolClass.id, in: modelContext)
+            let baseState = snapshotState ?? defaultGradebooksState(for: schoolClass)
+            map[schoolClass.id] = rebuildGradebooksState(baseState, for: schoolClass)
+        }
+
+        gradebooksByClassID = map
+    }
+
+    private func rebuildGradebooksState(
+        _ state: ClassGradebooksState,
+        for schoolClass: SchoolClass
+    ) -> ClassGradebooksState {
+        let tabs = state.tabs.map { tab in
+            var gradebook = tab.gradebook
+            gradebook.rows = buildRows(for: schoolClass, semesterId: tab.schoolYear, root: gradebook.root)
+            return GradebookTabState(id: tab.id, schoolYear: tab.schoolYear, gradebook: gradebook)
+        }
+        return ClassGradebooksState(tabs: tabs, selectedTabID: state.selectedTabID)
+    }
+
+    private func buildRows(
+        for schoolClass: SchoolClass,
+        semesterId: String,
+        root: GradeTileNode
+    ) -> [StudentGradeRow] {
+        let inputIDs = Set(GradeTileTree.columns(from: root).filter { $0.type == .input }.map { $0.nodeID })
+        let students = schoolClass.students.sorted { $0.studentNumber < $1.studentNumber }
+        var rows: [StudentGradeRow] = []
+
+        for student in students {
+            let entries = fetchGradeEntries(studentId: student.id, semesterId: semesterId)
+            let entriesByKey = Dictionary(uniqueKeysWithValues: entries.map { ($0.categoryKey, $0) })
+            ensureGradeEntries(for: student.id, semesterId: semesterId, inputIDs: inputIDs, existingKeys: Set(entriesByKey.keys))
+
+            var values: [UUID: String] = [:]
+            for inputID in inputIDs {
+                if let entry = entriesByKey[inputID.uuidString] {
+                    let raw = entry.rawValue
+                    if !raw.isEmpty {
+                        values[inputID] = raw
+                    } else if let value = entry.value {
+                        values[inputID] = String(format: "%0.2f", value)
+                    } else {
+                        values[inputID] = ""
+                    }
+                } else {
+                    values[inputID] = ""
+                }
+            }
+
+            rows.append(
+                StudentGradeRow(
+                    id: student.id,
+                    studentName: student.fullName,
+                    inputValues: values
+                )
+            )
+        }
+
+        return rows
+    }
+
+    private func fetchGradeEntries(studentId: UUID, semesterId: String) -> [GradeEntry] {
+        let descriptor = FetchDescriptor<GradeEntry>(
+            predicate: #Predicate { $0.studentId == studentId && $0.semesterId == semesterId }
+        )
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private func ensureGradeEntries(
+        for studentId: UUID,
+        semesterId: String,
+        inputIDs: Set<UUID>,
+        existingKeys: Set<String>
+    ) {
+        for inputID in inputIDs where !existingKeys.contains(inputID.uuidString) {
+            let entry = GradeEntry(
+                studentId: studentId,
+                semesterId: semesterId,
+                categoryKey: inputID.uuidString,
+                rawValue: "",
+                value: nil
+            )
+            modelContext.insert(entry)
+        }
+    }
+
+    private func persistSnapshots() {
+        isPersisting = true
+        for (classId, state) in gradebooksByClassID {
+            GradebookSnapshotStore.save(state: state, for: classId, in: modelContext)
+        }
+        isPersisting = false
+    }
+
+    private func seedInitialData() {
+        let seed = MockClassData.seed()
+
+        for schoolClass in seed.classes {
+            modelContext.insert(schoolClass)
+
+            if let state = seed.gradebooksByClassID[schoolClass.id] {
+                let studentNames = state.tabs.first?.gradebook.rows.map(\.studentName) ?? []
+                let root = state.tabs.first?.gradebook.root ?? GradeTileTree.standardRoot()
+                let inputIDs = Set(GradeTileTree.columns(from: root).filter { $0.type == .input }.map { $0.nodeID })
+
+                for (index, name) in studentNames.enumerated() {
+                    let (firstName, lastName) = splitName(name)
+                    let student = Student(
+                        firstName: firstName,
+                        lastName: lastName,
+                        studentNumber: index + 1,
+                        classId: schoolClass.id
+                    )
+                    schoolClass.students.append(student)
+
+                    for tab in state.tabs {
+                        for inputID in inputIDs {
+                            let entry = GradeEntry(
+                                studentId: student.id,
+                                semesterId: tab.schoolYear,
+                                categoryKey: inputID.uuidString,
+                                rawValue: "",
+                                value: nil
+                            )
+                            modelContext.insert(entry)
+                        }
+                    }
+                }
+
+                GradebookSnapshotStore.save(state: state, for: schoolClass.id, in: modelContext)
+            }
+        }
+    }
+
+    private func splitName(_ fullName: String) -> (String, String) {
+        let parts = fullName.split(separator: " ").map(String.init)
+        guard let first = parts.first else { return ("", "") }
+        let last = parts.dropFirst().joined(separator: " ")
+        return (first, last)
     }
 }
 
@@ -188,6 +350,7 @@ struct StatItem: View {
 }
 
 struct ClassGradebooksDetailView: View {
+    @Environment(\.modelContext) private var modelContext
     let schoolClass: SchoolClass
     @Binding var gradebooksState: ClassGradebooksState
 
@@ -210,6 +373,7 @@ struct ClassGradebooksDetailView: View {
             if let selectedBinding = selectedGradebookBinding {
                 GradebookDetailView(
                     schoolClass: schoolClass,
+                    semesterId: selectedTab?.schoolYear ?? schoolClass.schoolYear,
                     gradebook: selectedBinding
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -316,6 +480,11 @@ struct ClassGradebooksDetailView: View {
         )
     }
 
+    private var selectedTab: GradebookTabState? {
+        let selectedID = activeTabID
+        return gradebooksState.tabs.first(where: { $0.id == selectedID }) ?? gradebooksState.tabs.first
+    }
+
     private func tabTitleBinding(for id: UUID) -> Binding<String> {
         Binding(
             get: {
@@ -323,9 +492,23 @@ struct ClassGradebooksDetailView: View {
             },
             set: { newValue in
                 guard let index = gradebooksState.tabs.firstIndex(where: { $0.id == id }) else { return }
+                let oldValue = gradebooksState.tabs[index].schoolYear
                 gradebooksState.tabs[index].schoolYear = newValue
+                if oldValue != newValue {
+                    renameSemesterId(from: oldValue, to: newValue)
+                }
             }
         )
+    }
+
+    private func renameSemesterId(from oldValue: String, to newValue: String) {
+        guard !oldValue.isEmpty, !newValue.isEmpty else { return }
+        let studentIDs = Set(schoolClass.students.map(\.id))
+        let descriptor = FetchDescriptor<GradeEntry>()
+        let entries = (try? modelContext.fetch(descriptor)) ?? []
+        for entry in entries where studentIDs.contains(entry.studentId) && entry.semesterId == oldValue {
+            entry.semesterId = newValue
+        }
     }
 
     @ViewBuilder
@@ -486,7 +669,9 @@ struct ClassGradebooksDetailView: View {
 }
 
 struct GradebookDetailView: View {
+    @Environment(\.modelContext) private var modelContext
     let schoolClass: SchoolClass
+    let semesterId: String
     @Binding var gradebook: ClassGradebookState
 
     @State private var showNewDialog = false
@@ -499,6 +684,10 @@ struct GradebookDetailView: View {
     @State private var inputPopupCategory: GradeInputCategory = .numbers
     @State private var pendingDeleteNodeID: UUID?
     @State private var showDeleteNodeDialog = false
+    @State private var pendingDeleteStudentID: UUID?
+    @State private var showDeleteStudentDialog = false
+    @State private var pendingClearCell: GradeInputCellTarget?
+    @State private var showClearCellDialog = false
     @State private var columnWidths: [UUID: CGFloat] = [:]
     @State private var zoomScale: CGFloat = 1.0
     @State private var baseZoomScale: CGFloat = 1.0
@@ -938,6 +1127,30 @@ struct GradebookDetailView: View {
         } message: {
             Text("Dieser Reiter wird dauerhaft gelöscht.")
         }
+        .confirmationDialog("Schüler löschen?", isPresented: $showDeleteStudentDialog, titleVisibility: .visible) {
+            Button("Löschen", role: .destructive) {
+                guard let studentID = pendingDeleteStudentID else { return }
+                deleteStudent(id: studentID)
+                pendingDeleteStudentID = nil
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingDeleteStudentID = nil
+            }
+        } message: {
+            Text("Alle Noten dieses Schülers werden entfernt.")
+        }
+        .confirmationDialog("Note löschen?", isPresented: $showClearCellDialog, titleVisibility: .visible) {
+            Button("Löschen", role: .destructive) {
+                guard let target = pendingClearCell else { return }
+                setInputValue("", rowID: target.rowID, nodeID: target.nodeID)
+                pendingClearCell = nil
+            }
+            Button("Abbrechen", role: .cancel) {
+                pendingClearCell = nil
+            }
+        } message: {
+            Text("Dieser Eintrag wird gelöscht.")
+        }
         .overlay(alignment: .top) {
             if showAddStudentSheet {
                 AddStudentTopPopup(
@@ -1141,8 +1354,13 @@ struct GradebookDetailView: View {
 
     private func endStudentEditing(commit: Bool) {
         guard let studentID = editingStudentID else { return }
-        if !commit, let index = gradebook.rows.firstIndex(where: { $0.id == studentID }) {
-            gradebook.rows[index].studentName = editStudentOriginalName
+        if let index = gradebook.rows.firstIndex(where: { $0.id == studentID }) {
+            if commit {
+                persistStudentName(studentID: studentID, fullName: gradebook.rows[index].studentName)
+                gradebook.rows[index].studentName = currentStudentName(studentID: studentID) ?? gradebook.rows[index].studentName
+            } else {
+                gradebook.rows[index].studentName = editStudentOriginalName
+            }
         }
         focusedStudentID = nil
         editingStudentID = nil
@@ -1172,6 +1390,13 @@ struct GradebookDetailView: View {
                         .onSubmit {
                             endStudentEditing(commit: true)
                         }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                requestDeleteStudent(id: row.id)
+                            } label: {
+                                Label("Schüler löschen", systemImage: "trash")
+                            }
+                        }
                 } else {
                     Text(row.studentName)
                         .font(.system(size: 13, weight: .medium))
@@ -1187,6 +1412,13 @@ struct GradebookDetailView: View {
                                 .strokeBorder(Color.Table.border, lineWidth: 0.8)
                         }
                         .frame(width: nameColumnWidth, height: cellHeight)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                requestDeleteStudent(id: row.id)
+                            } label: {
+                                Label("Schüler löschen", systemImage: "trash")
+                            }
+                        }
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) {
                             beginStudentEditing(row.id)
@@ -1373,6 +1605,14 @@ struct GradebookDetailView: View {
             inputPopupCategory = .numbers
             activeInputCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
         }
+        .contextMenu {
+            Button(role: .destructive) {
+                pendingClearCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
+                showClearCellDialog = true
+            } label: {
+                Label("Zelle leeren", systemImage: "trash")
+            }
+        }
     }
 
     private func calculatedCell(row: StudentGradeRow, nodeID: UUID) -> some View {
@@ -1417,6 +1657,7 @@ struct GradebookDetailView: View {
     private func setInputValue(_ value: String, rowID: UUID, nodeID: UUID) {
         guard let rowIndex = gradebook.rows.firstIndex(where: { $0.id == rowID }) else { return }
         gradebook.rows[rowIndex].inputValues[nodeID] = value
+        persistGradeEntry(studentId: rowID, nodeID: nodeID, rawValue: value)
     }
 
     private func depth(of node: GradeTileNode) -> Int {
@@ -1509,6 +1750,7 @@ struct GradebookDetailView: View {
 
     private func syncRowsToStructure() {
         let validInputIDs = Set(columns.filter { $0.type == .input }.map { $0.nodeID })
+        ensureGradeEntriesForInputs(validInputIDs)
 
         for index in gradebook.rows.indices {
             gradebook.rows[index].inputValues = gradebook.rows[index].inputValues.filter { validInputIDs.contains($0.key) }
@@ -1532,10 +1774,15 @@ struct GradebookDetailView: View {
         guard gradebook.root.id != id else { return }
 
         let parentID = GradeTileTree.findParentID(root: gradebook.root, childID: id)
+        let inputIDsToRemove = inputNodeIDsForDeletion(nodeID: id)
         var root = gradebook.root
         guard GradeTileTree.removeNode(root: &root, id: id) != nil else { return }
 
         gradebook.root = root
+
+        if !inputIDsToRemove.isEmpty {
+            removeGradeEntries(for: inputIDsToRemove)
+        }
 
         if let parentID {
             autoDistributeWeights(for: parentID)
@@ -1757,33 +2004,208 @@ struct GradebookDetailView: View {
     private func addStudent(named name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        
+
         let inputIDs = Set(columns.filter { $0.type == .input }.map { $0.nodeID })
+        let nextNumber = (schoolClass.students.map(\.studentNumber).max() ?? 0) + 1
+        let (firstName, lastName) = splitName(trimmed)
+        let student = Student(
+            firstName: firstName,
+            lastName: lastName,
+            studentNumber: nextNumber,
+            classId: schoolClass.id
+        )
+        schoolClass.students.append(student)
+
         var values: [UUID: String] = [:]
         for inputID in inputIDs {
             values[inputID] = ""
         }
-        
-        gradebook.rows.append(StudentGradeRow(studentName: trimmed, inputValues: values))
+
+        gradebook.rows.append(
+            StudentGradeRow(
+                id: student.id,
+                studentName: student.fullName,
+                inputValues: values
+            )
+        )
+        createGradeEntries(for: student.id, inputIDs: inputIDs)
     }
 
     private func addStudents(names: [String]) {
         let inputIDs = Set(columns.filter { $0.type == .input }.map { $0.nodeID })
+        var nextNumber = (schoolClass.students.map(\.studentNumber).max() ?? 0) + 1
 
         for name in names {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+
+            let (firstName, lastName) = splitName(trimmed)
+            let student = Student(
+                firstName: firstName,
+                lastName: lastName,
+                studentNumber: nextNumber,
+                classId: schoolClass.id
+            )
+            nextNumber += 1
+            schoolClass.students.append(student)
 
             var values: [UUID: String] = [:]
             for inputID in inputIDs {
                 values[inputID] = ""
             }
 
-            gradebook.rows.append(StudentGradeRow(studentName: trimmed, inputValues: values))
+            gradebook.rows.append(
+                StudentGradeRow(
+                    id: student.id,
+                    studentName: student.fullName,
+                    inputValues: values
+                )
+            )
+            createGradeEntries(for: student.id, inputIDs: inputIDs)
         }
     }
 
+    private func persistGradeEntry(studentId: UUID, nodeID: UUID, rawValue: String) {
+        let descriptor = FetchDescriptor<GradeEntry>(
+            predicate: #Predicate {
+                $0.studentId == studentId &&
+                $0.semesterId == semesterId &&
+                $0.categoryKey == nodeID.uuidString
+            }
+        )
 
+        if let entry = (try? modelContext.fetch(descriptor))?.first {
+            entry.rawValue = rawValue
+            entry.value = parsedNumericValue(from: rawValue)
+        } else {
+            let entry = GradeEntry(
+                studentId: studentId,
+                semesterId: semesterId,
+                categoryKey: nodeID.uuidString,
+                rawValue: rawValue,
+                value: parsedNumericValue(from: rawValue)
+            )
+            modelContext.insert(entry)
+        }
+    }
+
+    private func parsedNumericValue(from rawValue: String) -> Double? {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), (1...6).contains(value) else { return nil }
+        return value
+    }
+
+    private func ensureGradeEntriesForInputs(_ inputIDs: Set<UUID>) {
+        for row in gradebook.rows {
+            let descriptor = FetchDescriptor<GradeEntry>(
+                predicate: #Predicate { $0.studentId == row.id && $0.semesterId == semesterId }
+            )
+            let existing = (try? modelContext.fetch(descriptor)) ?? []
+            let existingKeys = Set(existing.map(\.categoryKey))
+
+            for inputID in inputIDs where !existingKeys.contains(inputID.uuidString) {
+                let raw = row.inputValues[inputID] ?? ""
+                let entry = GradeEntry(
+                    studentId: row.id,
+                    semesterId: semesterId,
+                    categoryKey: inputID.uuidString,
+                    rawValue: raw,
+                    value: parsedNumericValue(from: raw)
+                )
+                modelContext.insert(entry)
+            }
+        }
+    }
+
+    private func createGradeEntries(for studentId: UUID, inputIDs: Set<UUID>) {
+        for inputID in inputIDs {
+            let entry = GradeEntry(
+                studentId: studentId,
+                semesterId: semesterId,
+                categoryKey: inputID.uuidString,
+                rawValue: "",
+                value: nil
+            )
+            modelContext.insert(entry)
+        }
+    }
+
+    private func requestDeleteStudent(id: UUID) {
+        pendingDeleteStudentID = id
+        showDeleteStudentDialog = true
+    }
+
+    private func deleteStudent(id: UUID) {
+        if editingStudentID == id {
+            endStudentEditing(commit: true)
+        }
+        gradebook.rows.removeAll { $0.id == id }
+
+        if let index = schoolClass.students.firstIndex(where: { $0.id == id }) {
+            let student = schoolClass.students[index]
+            schoolClass.students.remove(at: index)
+            modelContext.delete(student)
+        } else {
+            let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == id })
+            if let student = (try? modelContext.fetch(descriptor))?.first {
+                modelContext.delete(student)
+            }
+        }
+
+        let descriptor = FetchDescriptor<GradeEntry>(predicate: #Predicate { $0.studentId == id })
+        let entries = (try? modelContext.fetch(descriptor)) ?? []
+        for entry in entries {
+            modelContext.delete(entry)
+        }
+    }
+
+    private func inputNodeIDsForDeletion(nodeID: UUID) -> Set<UUID> {
+        guard let node = GradeTileTree.findNode(in: gradebook.root, id: nodeID) else { return [] }
+        return collectInputNodeIDs(node)
+    }
+
+    private func collectInputNodeIDs(_ node: GradeTileNode) -> Set<UUID> {
+        var result: Set<UUID> = []
+        if node.type == .input {
+            result.insert(node.id)
+        }
+        for child in node.children {
+            result.formUnion(collectInputNodeIDs(child))
+        }
+        return result
+    }
+
+    private func removeGradeEntries(for nodeIDs: Set<UUID>) {
+        let nodeKeys = Set(nodeIDs.map(\.uuidString))
+        let studentIDs = Set(schoolClass.students.map(\.id))
+        let descriptor = FetchDescriptor<GradeEntry>(predicate: #Predicate { $0.semesterId == semesterId })
+        let entries = (try? modelContext.fetch(descriptor)) ?? []
+        for entry in entries where studentIDs.contains(entry.studentId) && nodeKeys.contains(entry.categoryKey) {
+            modelContext.delete(entry)
+        }
+    }
+
+    private func persistStudentName(studentID: UUID, fullName: String) {
+        let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == studentID })
+        guard let student = (try? modelContext.fetch(descriptor))?.first else { return }
+        let trimmed = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let (firstName, lastName) = splitName(trimmed)
+        student.firstName = firstName
+        student.lastName = lastName
+    }
+
+    private func currentStudentName(studentID: UUID) -> String? {
+        let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == studentID })
+        return (try? modelContext.fetch(descriptor))?.first?.fullName
+    }
+
+    private func splitName(_ fullName: String) -> (String, String) {
+        let parts = fullName.split(separator: " ").map(String.init)
+        guard let first = parts.first else { return ("", "") }
+        let last = parts.dropFirst().joined(separator: " ")
+        return (first, last)
+    }
 }
 
 struct GradeInputCellTarget: Identifiable, Equatable {
@@ -3092,4 +3514,5 @@ private enum MockClassData {
     NavigationStack {
         GradeBookMainView()
     }
+    .modelContainer(for: [SchoolClass.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
 }
