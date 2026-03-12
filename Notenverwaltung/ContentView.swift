@@ -44,12 +44,16 @@ struct ContentView: View {
 // MARK: - Dashboard Overview
 
 struct ÜbersichtView: View {
+    @Environment(\.modelContext) private var modelContext
     // iPad-optimiertes Layout: 3 Spalten
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: DesignConstants.Spacing.xl),
         count: 3
     )
     @State private var navigationPath: [TeacherSuiteModule] = []
+    @State private var showSettings = false
+    @State private var showResetConfirm = false
+    @State private var showResetDone = false
     
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -80,7 +84,7 @@ struct ÜbersichtView: View {
                 #if os(iOS)
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        // TODO: Einstellungen implementieren
+                        showSettings = true
                     } label: {
                         Image(systemName: "gearshape")
                             .font(.system(size: DesignConstants.IconSize.medium, weight: .medium))
@@ -91,6 +95,43 @@ struct ÜbersichtView: View {
             }
             .navigationDestination(for: TeacherSuiteModule.self) { module in
                 destinationView(for: module)
+            }
+            .sheet(isPresented: $showSettings) {
+                NavigationStack {
+                    List {
+                        Section("Daten") {
+                            Button(role: .destructive) {
+                                showResetConfirm = true
+                            } label: {
+                                Label("Alle Daten löschen", systemImage: "trash")
+                            }
+                        }
+                    }
+                    .navigationTitle("Einstellungen")
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Fertig") {
+                                showSettings = false
+                            }
+                        }
+                    }
+                    .confirmationDialog("Alle Daten löschen?", isPresented: $showResetConfirm, titleVisibility: .visible) {
+                        Button("Löschen", role: .destructive) {
+                            DataResetService.clearAll(in: modelContext)
+                            showResetDone = true
+                        }
+                        Button("Abbrechen", role: .cancel) {}
+                    } message: {
+                        Text("Dies entfernt alle Klassen, Schüler, Noten und Tabellenzustände.")
+                    }
+                    .alert("Daten gelöscht", isPresented: $showResetDone) {
+                        Button("OK") {
+                            showSettings = false
+                        }
+                    } message: {
+                        Text("Bitte die App neu starten, um Seed-Daten neu anzulegen.")
+                    }
+                }
             }
         }
     }

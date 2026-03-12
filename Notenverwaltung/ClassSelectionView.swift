@@ -2178,8 +2178,14 @@ struct GradebookDetailView: View {
     private func parsedNumericValue(from rawValue: String) -> Double? {
         let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(normalized), (1...6).contains(value) else { return nil }
-        return value
+        guard !normalized.isEmpty else { return nil }
+        if normalized.contains("+") || normalized.contains("-") { return nil }
+        if normalized.contains(".") {
+            guard let value = Double(normalized), (1.0...6.0).contains(value) else { return nil }
+            return value
+        }
+        guard let intValue = Int(normalized), (0...15).contains(intValue) else { return nil }
+        return Double(intValue)
     }
 
     private func ensureGradeEntriesForInputs(_ inputIDs: Set<UUID>) {
@@ -2311,6 +2317,22 @@ enum GradeInputCategory: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum GradeNumericMode: String, CaseIterable, Identifiable {
+    case grades
+    case points
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .grades:
+            return "Noten"
+        case .points:
+            return "Punkte"
+        }
+    }
+}
+
 struct EmojiOption: Identifiable {
     let id: String
     let emoji: String
@@ -2385,6 +2407,8 @@ struct GradeInputPopup: View {
 
     @State private var showSignPicker = false
     @State private var panelOffset: CGSize = .zero
+    @State private var numericMode: GradeNumericMode = .grades
+    @State private var validationMessage: String? = nil
     @GestureState private var dragOffset: CGSize = .zero
     @GestureState private var isDraggingPopup = false
 
@@ -2392,9 +2416,28 @@ struct GradeInputPopup: View {
         VStack(spacing: 16) {
             header
             inputPreview
+            if let validationMessage {
+                Text(validationMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             categorySwitcher
+            if selectedCategory == .numbers {
+                numericModeSwitcher
+            }
             categoryContent
             actionRow
+        }
+        .onAppear {
+            inferNumericModeFromValue()
+        }
+        .onChange(of: value) {
+            validationMessage = nil
+        }
+        .onChange(of: selectedCategory) {
+            validationMessage = nil
+            inferNumericModeFromValue()
         }
         .padding(20)
         .frame(maxWidth: 420)
@@ -2470,6 +2513,12 @@ struct GradeInputPopup: View {
         .padding(.vertical, 12)
         .background(Color.black.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            if validationMessage != nil {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.red, lineWidth: 1)
+            }
+        }
     }
 
     private var categorySwitcher: some View {
@@ -2486,6 +2535,27 @@ struct GradeInputPopup: View {
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(selectedCategory == category ? Color.blue : Color.black.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var numericModeSwitcher: some View {
+        HStack(spacing: 8) {
+            ForEach(GradeNumericMode.allCases) { mode in
+                Button {
+                    numericMode = mode
+                } label: {
+                    Text(mode.label)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(numericMode == mode ? .white : .primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(numericMode == mode ? Color.teal : Color.black.opacity(0.06))
                         )
                 }
                 .buttonStyle(.plain)
@@ -2591,6 +2661,7 @@ struct GradeInputPopup: View {
         HStack(spacing: 10) {
             Button("Leeren") {
                 value = ""
+                validationMessage = nil
             }
             .font(.system(size: 14, weight: .semibold))
             .buttonStyle(.bordered)
@@ -2598,11 +2669,74 @@ struct GradeInputPopup: View {
             Spacer()
 
             Button("Übernehmen") {
-                onCommit()
+                commitIfValid()
             }
             .font(.system(size: 14, weight: .semibold))
             .buttonStyle(.borderedProminent)
         }
+    }
+
+    private func commitIfValid() {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            onCommit()
+            return
+        }
+
+        switch selectedCategory {
+        case .numbers:
+            if let normalized = validateNumberInput(trimmed) {
+                value = normalized
+                onCommit()
+            }
+        case .text:
+            onCommit()
+        case .emojis:
+            onCommit()
+        }
+    }
+
+    private func validateNumberInput(_ raw: String) -> String? {
+        let normalized = raw.replacingOccurrences(of: ",", with: ".")
+        if normalized.contains("+") || normalized.contains("-") {
+            validationMessage = "Keine Vorzeichen erlaubt."
+            return nil
+        }
+
+        switch numericMode {
+        case .grades:
+            guard let value = Double(normalized), (1.0...6.0).contains(value) else {
+                validationMessage = "Nur Noten von 1 bis 6 erlaubt."
+                return nil
+            }
+            validationMessage = nil
+            return normalized
+        case .points:
+            guard !normalized.contains(".") else {
+                validationMessage = "Punkte nur als ganze Zahl (0–15)."
+                return nil
+            }
+            guard let points = Int(normalized), (0...15).contains(points) else {
+                validationMessage = "Punkte nur von 0 bis 15."
+                return nil
+            }
+            validationMessage = nil
+            return String(format: "%02d", points)
+        }
+    }
+
+    private func inferNumericModeFromValue() {
+        guard selectedCategory == .numbers else { return }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("0"), trimmed.count == 2, Int(trimmed) != nil {
+            numericMode = .points
+            return
+        }
+        if let intValue = Int(trimmed), intValue > 6 {
+            numericMode = .points
+            return
+        }
+        numericMode = .grades
     }
 
     private var signPickerOverlay: some View {

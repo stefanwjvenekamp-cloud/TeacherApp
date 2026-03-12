@@ -29,9 +29,31 @@ struct NotenverwaltungApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            removeDefaultStoreFiles()
+            do {
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create ModelContainer: \(error)")
+            }
         }
     }()
+
+    private static func removeDefaultStoreFiles() {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let url = base.appendingPathComponent("default.store")
+        let fileManager = FileManager.default
+        let urls = [
+            url,
+            url.appendingPathExtension("sqlite"),
+            url.appendingPathExtension("sqlite-shm"),
+            url.appendingPathExtension("sqlite-wal")
+        ]
+        for target in urls {
+            if fileManager.fileExists(atPath: target.path) {
+                try? fileManager.removeItem(at: target)
+            }
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
