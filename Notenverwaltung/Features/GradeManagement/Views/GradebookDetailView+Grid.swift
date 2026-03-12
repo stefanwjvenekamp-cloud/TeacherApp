@@ -26,9 +26,30 @@ extension GradebookDetailView {
 
     // MARK: - Container Background
 
+    func headerTileColorOwner(for node: GradeTileNode) -> GradeTileNode? {
+        node.colorStyle == .automatic ? nil : node
+    }
+
+    func containerColorOwner(for node: GradeTileNode) -> GradeTileNode? {
+        node.colorStyle == .automatic ? nil : node
+    }
+
+    func dataColorOwner(for leafNodeID: UUID) -> GradeTileNode? {
+        guard visibleColumnIDs.contains(leafNodeID) else {
+            return nil
+        }
+
+        guard let node = GradeTileTree.findNode(in: viewModel.root, id: leafNodeID) else {
+            return nil
+        }
+
+        return node.colorStyle == .automatic ? nil : node
+    }
+
     func containerBackground(for node: GradeTileNode, level: Int) -> Color {
+        let colorOwner = containerColorOwner(for: node)
         let normalizedLevel = min(max(level, 0), 4)
-        switch node.colorStyle {
+        switch colorOwner?.colorStyle ?? .automatic {
         case .automatic:
             switch normalizedLevel {
             case 0:
@@ -194,43 +215,60 @@ extension GradebookDetailView {
     }
     
     private func columnBackground(for nodeID: UUID, isCalculated: Bool) -> Color {
-        let style = effectiveColorStyle(for: nodeID)
         let depth = nodeDepth(for: nodeID)
         let normalizedDepth = min(max(depth, 0), 4)
-        let base: Color
+        let style = dataColorOwner(for: nodeID)?.colorStyle ?? .automatic
+
+        if style != .automatic {
+            let tintedBackground = columnTintColor(for: style, isCalculated: isCalculated)
+            switch normalizedDepth {
+            case 0:
+                return tintedBackground
+            case 1:
+                return tintedBackground.opacity(0.94)
+            default:
+                return tintedBackground.opacity(0.88)
+            }
+        }
+
+        if isCalculated {
+            switch normalizedDepth {
+            case 0:
+                return Color.Table.hover
+            case 1:
+                return Color.Table.hover.opacity(0.92)
+            default:
+                return Color.Table.hover.opacity(0.84)
+            }
+        } else {
+            switch normalizedDepth {
+            case 0:
+                return Color.Table.cellBackground
+            case 1:
+                return Color.Table.cellBackground.opacity(0.97)
+            default:
+                return Color.Table.cellBackground.opacity(0.94)
+            }
+        }
+    }
+
+    private func columnTintColor(for style: GradeTileColorStyle, isCalculated: Bool) -> Color {
+        let opacity: Double = isCalculated ? 0.72 : 0.58
+
         switch style {
         case .automatic:
-            if isCalculated {
-                switch normalizedDepth {
-                case 0:
-                    base = Color.Table.hover
-                case 1:
-                    base = Color.Table.hover.opacity(0.92)
-                default:
-                    base = Color.Table.hover.opacity(0.84)
-                }
-            } else {
-                switch normalizedDepth {
-                case 0:
-                    base = Color.Table.cellBackground
-                case 1:
-                    base = Color.Table.cellBackground.opacity(0.97)
-                default:
-                    base = Color.Table.cellBackground.opacity(0.94)
-                }
-            }
+            return isCalculated ? Color.Table.hover : Color.Table.cellBackground
         case .slate:
-            base = Color(red: 0.92, green: 0.93, blue: 0.95)
+            return Color(red: 0.92, green: 0.93, blue: 0.95).opacity(opacity)
         case .blue:
-            base = Color(red: 0.88, green: 0.93, blue: 0.99)
+            return Color(red: 0.88, green: 0.93, blue: 0.99).opacity(opacity)
         case .green:
-            base = Color(red: 0.89, green: 0.96, blue: 0.91)
+            return Color(red: 0.89, green: 0.96, blue: 0.91).opacity(opacity)
         case .orange:
-            base = Color(red: 0.99, green: 0.93, blue: 0.86)
+            return Color(red: 0.99, green: 0.93, blue: 0.86).opacity(opacity)
         case .red:
-            base = Color(red: 0.99, green: 0.90, blue: 0.90)
+            return Color(red: 0.99, green: 0.90, blue: 0.90).opacity(opacity)
         }
-        return isCalculated ? base.opacity(0.85) : base
     }
 
     private func nodeDepth(for nodeID: UUID) -> Int {
@@ -251,31 +289,6 @@ extension GradebookDetailView {
         return nil
     }
     
-    private func effectiveColorStyle(for nodeID: UUID) -> GradeTileColorStyle {
-        resolveColorStyle(
-            in: viewModel.root,
-            targetID: nodeID,
-            inherited: .automatic
-        ) ?? .automatic
-    }
-    
-    private func resolveColorStyle(
-        in node: GradeTileNode,
-        targetID: UUID,
-        inherited: GradeTileColorStyle
-    ) -> GradeTileColorStyle? {
-        let nextInherited = node.colorStyle == .automatic ? inherited : node.colorStyle
-        if node.id == targetID {
-            return nextInherited
-        }
-        for child in node.children {
-            if let resolved = resolveColorStyle(in: child, targetID: targetID, inherited: nextInherited) {
-                return resolved
-            }
-        }
-        return nil
-    }
-
     func width(for nodeID: UUID) -> CGFloat {
         viewModel.columnWidths[nodeID] ?? preferredWidth(for: nodeID)
     }

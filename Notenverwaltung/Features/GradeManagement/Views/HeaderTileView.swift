@@ -7,6 +7,8 @@ struct HeaderTileView: View {
     let parentIsCalculation: Bool
     let width: CGFloat
     let height: CGFloat
+    let colorFillWidth: CGFloat
+    let tileColorStyle: GradeTileColorStyle
     let isLeaf: Bool
     let showWeightWarning: Bool
     let isMoving: Bool
@@ -250,31 +252,49 @@ struct HeaderTileView: View {
         isTitleFieldFocused = false
     }
 
-    private var tileBackground: Color {
-        let normalizedLevel = min(max(level, 0), 4)
-        switch node.colorStyle {
-        case .automatic:
-            if node.type == .calculation {
-                switch normalizedLevel {
-                case 0:
-                    return Color.Table.headerBackground
-                case 1:
-                    return Color.Table.headerBackground.opacity(0.75)
-                case 2:
-                    return Color.Table.headerBackground.opacity(0.55)
-                default:
-                    return Color.Table.headerBackground.opacity(0.40)
-                }
-            } else {
-                switch normalizedLevel {
-                case 0:
-                    return Color.Table.cellBackground
-                case 1:
-                    return Color.Table.cellBackground.opacity(0.95)
-                default:
-                    return Color.Table.cellBackground.opacity(0.90)
-                }
+    @ViewBuilder
+    private var tileBackground: some View {
+        let baseBackground = automaticBackground
+        if tileColorStyle == .automatic {
+            baseBackground
+        } else {
+            ZStack(alignment: .leading) {
+                baseBackground
+                tileColor
+                    .frame(width: min(max(colorFillWidth, 0), width))
             }
+        }
+    }
+
+    private var automaticBackground: Color {
+        let normalizedLevel = min(max(level, 0), 4)
+        if node.type == .calculation {
+            switch normalizedLevel {
+            case 0:
+                return Color.Table.headerBackground
+            case 1:
+                return Color.Table.headerBackground.opacity(0.75)
+            case 2:
+                return Color.Table.headerBackground.opacity(0.55)
+            default:
+                return Color.Table.headerBackground.opacity(0.40)
+            }
+        } else {
+            switch normalizedLevel {
+            case 0:
+                return Color.Table.cellBackground
+            case 1:
+                return Color.Table.cellBackground.opacity(0.95)
+            default:
+                return Color.Table.cellBackground.opacity(0.90)
+            }
+        }
+    }
+
+    private var tileColor: Color {
+        switch tileColorStyle {
+        case .automatic:
+            return automaticBackground
         case .slate:
             return Color(red: 0.92, green: 0.93, blue: 0.95)
         case .blue:
