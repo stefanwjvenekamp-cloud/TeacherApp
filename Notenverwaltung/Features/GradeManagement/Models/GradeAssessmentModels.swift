@@ -88,6 +88,7 @@ final class GradeEntry {
     var studentId: UUID
     var semesterId: String
     var categoryKey: String
+    var rawValue: String
     var value: Double?
 
     init(
@@ -95,6 +96,7 @@ final class GradeEntry {
         studentId: UUID,
         semesterId: String,
         categoryKey: String,
+        rawValue: String = "",
         value: Double? = nil
     ) {
         self.id = UUID()
@@ -102,6 +104,7 @@ final class GradeEntry {
         self.studentId = studentId
         self.semesterId = semesterId
         self.categoryKey = categoryKey
+        self.rawValue = rawValue
         self.value = value
     }
 }

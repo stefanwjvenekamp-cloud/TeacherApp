@@ -23,6 +23,7 @@ Die aktive Notenverwaltung besteht aus diesen Bausteinen:
   - Klassenübersicht
   - Detailansicht pro Klasse
   - Tabellenansicht mit Zoom und Bearbeitungslogik
+  - SwiftData-Anbindung für Klassen, Schüler und Noten
 
 - `GradeBookModels.swift`
   Enthält die aktuell verwendeten In-Memory-Modelle für die Notenverwaltung:
@@ -35,8 +36,11 @@ Die aktive Notenverwaltung besteht aus diesen Bausteinen:
   - `ClassGradebooksState`
   - `GradeTileTree`
 
-- `Shared/Services/GradebookPersistenceService.swift`
-  Kapselt das Speichern und Laden des aktiven Gradebook-Zustands.
+- `Shared/Services/GradebookSnapshotStore.swift`
+  Persistiert den Tabellen- und Tab-Zustand als SwiftData-Snapshot.
+
+- `Shared/Services/LegacyGradebookMigration.swift`
+  Einmalige Migration aus der alten JSON-Datei in SwiftData.
 
 ### Domänenmodelle
 
@@ -53,7 +57,7 @@ Die persistierten Kerndaten liegen getrennt in:
 
 - `Features/GradeManagement/Models/GradeAssessmentModels.swift`
   - `Assessment`
-  - `GradeEntry`
+  - `GradeEntry` (inkl. `rawValue` für Text/Emoji)
   - `GradeComment`
   - Bewertungsbezogene Hilfstypen
 
@@ -65,6 +69,7 @@ Folgende Redundanzen wurden entfernt:
 - Das alte Template-Modell `Item.swift` wurde entfernt.
 - Der Tab `NotenView` verwendet jetzt dieselbe aktive Notenverwaltung wie die Dashboard-Kachel.
 - Veraltete Legacy-Typen für die frühere `GradeBookView`-Implementierung wurden aus `GradeBookModels.swift` entfernt.
+- Die JSON-Persistenz für Noten (`GradebookPersistenceService`) wurde entfernt und durch SwiftData ersetzt.
 
 ## Aktuelle Verantwortlichkeiten der Dateien
 
