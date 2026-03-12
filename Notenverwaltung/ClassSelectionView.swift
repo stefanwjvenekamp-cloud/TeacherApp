@@ -689,6 +689,7 @@ struct GradebookDetailView: View {
     @State private var pendingClearCell: GradeInputCellTarget?
     @State private var showClearCellDialog = false
     @State private var columnWidths: [UUID: CGFloat] = [:]
+    @State private var horizontalScrollOffset: CGFloat = 0
     @State private var zoomScale: CGFloat = 1.0
     @State private var baseZoomScale: CGFloat = 1.0
     /// The node currently being moved (tap-to-move mode).
@@ -731,8 +732,16 @@ struct GradebookDetailView: View {
         headerHeight + CGFloat(gradebook.rows.count) * cellHeight
     }
 
+    private var gridRowsHeight: CGFloat {
+        CGFloat(gradebook.rows.count) * cellHeight
+    }
+
     private var nameColumnContentHeight: CGFloat {
         gridContentHeight + cellHeight + 16
+    }
+
+    private var nameColumnRowsHeight: CGFloat {
+        nameColumnContentHeight - headerHeight
     }
 
     // MARK: - Node Width Cache (Recursive Layout)
@@ -1008,86 +1017,165 @@ struct GradebookDetailView: View {
         }
     }
 
+    /// Applies the same top-leading zoom layout to both fixed and scrollable table sections.
+    /// The content is laid out once in its unscaled size and only then transformed,
+    /// which keeps header widths, row heights and scroll coordinates stable.
+    private func scaledTableSection<Content: View>(
+        baseWidth: CGFloat,
+        baseHeight: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(width: baseWidth, height: baseHeight, alignment: .topLeading)
+            .scaleEffect(zoomScale, anchor: .topLeading)
+            .frame(
+                width: baseWidth * zoomScale,
+                height: baseHeight * zoomScale,
+                alignment: .topLeading
+            )
+    }
+
+    private var stickyGridHeaderViewport: some View {
+        GeometryReader { geometry in
+            // The header is rendered once outside the vertical scroll area and follows
+            // the body's real horizontal scroll position instead of owning a second scroll view.
+            scaledTableSection(
+                baseWidth: totalColumnsWidth,
+                baseHeight: headerHeight
+            ) {
+                gridHeaderView
+            }
+            .offset(x: horizontalScrollOffset)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+            .clipped()
+        }
+        .frame(height: headerHeight * zoomScale)
+    }
+
+    private var stickyTableHeaderRow: some View {
+        HStack(alignment: .top, spacing: 0) {
+            scaledTableSection(
+                baseWidth: nameColumnWidth,
+                baseHeight: headerHeight
+            ) {
+                nameColumnHeader
+            }
+
+            stickyGridHeaderViewport
+        }
+    }
+
+    @ViewBuilder
+    private var horizontalGridRowsScrollView: some View {
+        #if os(iOS)
+        SyncedHorizontalScrollView(
+            showsHorizontalScrollIndicator: false,
+            onOffsetChange: { horizontalScrollOffset = $0 }
+        ) {
+            scaledTableSection(
+                baseWidth: totalColumnsWidth,
+                baseHeight: gridRowsHeight
+            ) {
+                gridRowsView
+            }
+        }
+        .frame(height: gridRowsHeight * zoomScale, alignment: .topLeading)
+        #else
+        ScrollView(.horizontal) {
+            scaledTableSection(
+                baseWidth: totalColumnsWidth,
+                baseHeight: gridRowsHeight
+            ) {
+                gridRowsView
+            }
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: GridHorizontalContentOffsetPreferenceKey.self,
+                        value: geometry.frame(in: .named("gradebookHorizontalScroll")).minX
+                    )
+                }
+            }
+        }
+        .coordinateSpace(name: "gradebookHorizontalScroll")
+        .frame(height: gridRowsHeight * zoomScale, alignment: .topLeading)
+        #endif
+    }
+
+    private var scrollableTableBody: some View {
+        ScrollView(.vertical) {
+            HStack(alignment: .top, spacing: 0) {
+                // Names and data rows now share one real vertical scroll container.
+                scaledTableSection(
+                    baseWidth: nameColumnWidth,
+                    baseHeight: nameColumnRowsHeight
+                ) {
+                    nameColumnRows
+                }
+
+                horizontalGridRowsScrollView
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
+    @available(iOS 17.0, macOS 14.0, *)
+    private var modernZoomableTableLayout: some View {
+        VStack(spacing: 0) {
+            stickyTableHeaderRow
+            scrollableTableBody
+        }
+        #if !os(iOS)
+        .onPreferenceChange(GridHorizontalContentOffsetPreferenceKey.self) { value in
+            horizontalScrollOffset = value
+        }
+        #endif
+        .gesture(
+            MagnifyGesture()
+                .onChanged { value in
+                    zoomScale = max(0.5, min(baseZoomScale * value.magnification, 3.0))
+                }
+                .onEnded { _ in
+                    baseZoomScale = zoomScale
+                }
+        )
+    }
+
+    private var legacyZoomableTableLayout: some View {
+        VStack(spacing: 0) {
+            stickyTableHeaderRow
+            scrollableTableBody
+        }
+        #if !os(iOS)
+        .onPreferenceChange(GridHorizontalContentOffsetPreferenceKey.self) { value in
+            horizontalScrollOffset = value
+        }
+        #endif
+        .gesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    zoomScale = max(0.5, min(baseZoomScale * value, 3.0))
+                }
+                .onEnded { _ in
+                    baseZoomScale = zoomScale
+                }
+        )
+    }
+
+    private var zoomableTableLayout: AnyView {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            return AnyView(modernZoomableTableLayout)
+        } else {
+            return AnyView(legacyZoomableTableLayout)
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.systemGroupedBackground
                 .ignoresSafeArea()
 
-            ScrollView(.vertical) {
-                if #available(iOS 17.0, macOS 14.0, *) {
-                    HStack(alignment: .top, spacing: 0) {
-                        // Linke Seite: Name-Header + Schülerzeilen (fixiert)
-                        VStack(spacing: 0) {
-                            nameColumnHeader
-                            nameColumnRows
-                        }
-                        .scaleEffect(zoomScale, anchor: .topLeading)
-                        .frame(
-                            width: nameColumnWidth * zoomScale,
-                            height: nameColumnContentHeight * zoomScale,
-                            alignment: .topLeading
-                        )
-
-                        // Rechte Seite: Ein einziges Grid für Header + Daten
-                        ScrollView(.horizontal) {
-                            unifiedGrid
-                                .scaleEffect(zoomScale, anchor: .topLeading)
-                                .frame(
-                                    width: totalColumnsWidth * zoomScale,
-                                    height: gridContentHeight * zoomScale,
-                                    alignment: .topLeading
-                                )
-                        }
-                        .frame(height: gridContentHeight * zoomScale, alignment: .topLeading)
-                    }
-                    .contentShape(Rectangle())
-                    .gesture(
-                        MagnifyGesture()
-                            .onChanged { value in
-                                zoomScale = max(0.5, min(baseZoomScale * value.magnification, 3.0))
-                            }
-                            .onEnded { _ in
-                                baseZoomScale = zoomScale
-                            }
-                    )
-                } else {
-                    HStack(alignment: .top, spacing: 0) {
-                        // Linke Seite: Name-Header + Schülerzeilen (fixiert)
-                        VStack(spacing: 0) {
-                            nameColumnHeader
-                            nameColumnRows
-                        }
-                        .scaleEffect(zoomScale, anchor: .topLeading)
-                        .frame(
-                            width: nameColumnWidth * zoomScale,
-                            height: nameColumnContentHeight * zoomScale,
-                            alignment: .topLeading
-                        )
-
-                        // Rechte Seite: Ein einziges Grid für Header + Daten
-                        ScrollView(.horizontal) {
-                            unifiedGrid
-                                .scaleEffect(zoomScale, anchor: .topLeading)
-                                .frame(
-                                    width: totalColumnsWidth * zoomScale,
-                                    height: gridContentHeight * zoomScale,
-                                    alignment: .topLeading
-                                )
-                        }
-                        .frame(height: gridContentHeight * zoomScale, alignment: .topLeading)
-                    }
-                    .contentShape(Rectangle())
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { value in
-                                zoomScale = max(0.5, min(baseZoomScale * value, 3.0))
-                            }
-                            .onEnded { _ in
-                                baseZoomScale = zoomScale
-                            }
-                    )
-                }
-            }
+            zoomableTableLayout
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color.Table.cellBackground)
         }
@@ -1520,38 +1608,41 @@ struct GradebookDetailView: View {
         }
     }
 
-    /// The unified grid: recursive header + semantic data rows.
-    private var unifiedGrid: some View {
+    /// Sticky header content for the right table section.
+    private var gridHeaderView: some View {
         let leaves = leafColumns
         let totalWidth = leaves.reduce(CGFloat(0)) { $0 + $1.width }
         let headerTotalH = CGFloat(headerDepth) * cellHeight
         let cache = nodeWidthCache
 
-        return VStack(spacing: 0) {
-            // ── Header section: recursive tree-driven layout ──
-            ZStack(alignment: .topLeading) {
-                // Semantic header (recursive VStack/HStack)
-                headerNodeView(
-                    node: gradebook.root,
-                    level: 0,
-                    isRoot: true,
-                    parentIsCalculation: false,
-                    availableHeight: headerTotalH,
+        return ZStack(alignment: .topLeading) {
+            // The recursive header stays structurally unchanged, but is rendered separately.
+            headerNodeView(
+                node: gradebook.root,
+                level: 0,
+                isRoot: true,
+                parentIsCalculation: false,
+                availableHeight: headerTotalH,
+                widthCache: cache
+            )
+
+            if let movingID = movingNodeID {
+                insertionSlotsOverlay(
+                    movingID: movingID,
+                    headerTotalHeight: headerTotalH,
                     widthCache: cache
                 )
-
-                // Move-mode insertion slots (overlay on top of header)
-                if let movingID = movingNodeID {
-                    insertionSlotsOverlay(
-                        movingID: movingID,
-                        headerTotalHeight: headerTotalH,
-                        widthCache: cache
-                    )
-                }
             }
-            .frame(width: totalWidth, height: headerTotalH)
+        }
+        .frame(width: totalWidth, height: headerTotalH)
+    }
 
-            // ── Data rows: HStack per student ──
+    /// Scrollable row content for the right table section without the header.
+    private var gridRowsView: some View {
+        let leaves = leafColumns
+        let totalWidth = leaves.reduce(CGFloat(0)) { $0 + $1.width }
+
+        return VStack(spacing: 0) {
             ForEach(gradebook.rows) { row in
                 HStack(spacing: 0) {
                     ForEach(leaves, id: \.nodeID) { leaf in
@@ -1567,11 +1658,6 @@ struct GradebookDetailView: View {
             }
         }
         .frame(width: totalWidth)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.Table.border.opacity(0.95), lineWidth: 1.4)
-        }
     }
 
     private func onWeightChangeFor(_ nodeID: UUID, _ weight: Double) {
@@ -2607,6 +2693,81 @@ private enum InsertionAction {
     /// Append as last child of the given parent
     case appendToParent(UUID)
 }
+
+private struct GridHorizontalContentOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+#if os(iOS)
+private struct SyncedHorizontalScrollView<Content: View>: UIViewRepresentable {
+    let showsHorizontalScrollIndicator: Bool
+    let onOffsetChange: (CGFloat) -> Void
+    let content: AnyView
+
+    init(
+        showsHorizontalScrollIndicator: Bool = false,
+        onOffsetChange: @escaping (CGFloat) -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.showsHorizontalScrollIndicator = showsHorizontalScrollIndicator
+        self.onOffsetChange = onOffsetChange
+        self.content = AnyView(content())
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOffsetChange: onOffsetChange)
+    }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.delegate = context.coordinator
+        scrollView.showsHorizontalScrollIndicator = showsHorizontalScrollIndicator
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.alwaysBounceHorizontal = true
+        scrollView.bounces = true
+        scrollView.alwaysBounceVertical = false
+        scrollView.clipsToBounds = true
+
+        let host = context.coordinator.hostingController
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(host.view)
+
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            host.view.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor)
+        ])
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        context.coordinator.onOffsetChange = onOffsetChange
+        context.coordinator.hostingController.rootView = content
+        context.coordinator.hostingController.view.invalidateIntrinsicContentSize()
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        var onOffsetChange: (CGFloat) -> Void
+        let hostingController = UIHostingController(rootView: AnyView(EmptyView()))
+
+        init(onOffsetChange: @escaping (CGFloat) -> Void) {
+            self.onOffsetChange = onOffsetChange
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            onOffsetChange(-scrollView.contentOffset.x)
+        }
+    }
+}
+#endif
 
 // MARK: - Header Tile View (Grid Cell Content)
 
