@@ -6,7 +6,7 @@ import Observation
 final class GradebookDetailViewModel {
     let schoolClass: SchoolClass
     let tab: GradebookTabEntity
-    private let context: ModelContext
+    private let interactor: GradebookDetailInteractor
 
     // MARK: - Entity-Derived State
 
@@ -60,39 +60,37 @@ final class GradebookDetailViewModel {
     init(schoolClass: SchoolClass, tab: GradebookTabEntity, context: ModelContext) {
         self.schoolClass = schoolClass
         self.tab = tab
-        self.context = context
-        let resolvedRoot = GradebookRepository.rootNode(for: tab) ?? GradeTileTree.emptyRoot()
+        self.interactor = GradebookDetailInteractor(
+            schoolClass: schoolClass,
+            tab: tab,
+            context: context
+        )
+        let resolvedRoot = interactor.loadRoot()
         self.root = resolvedRoot
-        self.rows = Self.buildRows(for: schoolClass, tab: tab, root: resolvedRoot, context: context)
+        self.rows = interactor.buildRows(root: resolvedRoot)
     }
 
     // MARK: - Data Refresh
 
     /// Rebuild rows from entities.
     func refreshRows() {
-        rows = Self.buildRows(for: schoolClass, tab: tab, root: root, context: context)
+        rows = interactor.buildRows(root: root)
     }
 
     // MARK: - Node Mutations
 
     func addChild(to parentID: UUID, type: GradeTileType) {
-        root = GradebookNodeService.addChild(
-            to: parentID, type: type, root: root, tab: tab, context: context
-        )
+        root = interactor.addChild(to: parentID, type: type, root: root)
         refreshRows()
     }
 
     func addSiblingArea(after siblingID: UUID) {
-        root = GradebookNodeService.addSiblingArea(
-            after: siblingID, root: root, tab: tab, context: context
-        )
+        root = interactor.addSiblingArea(after: siblingID, root: root)
         refreshRows()
     }
 
     func deleteNode(id: UUID) {
-        root = GradebookNodeService.deleteNode(
-            id: id, root: root, tab: tab, context: context
-        )
+        root = interactor.deleteNode(id: id, root: root)
         refreshRows()
 
         if movingNodeID == id { movingNodeID = nil }
@@ -101,36 +99,23 @@ final class GradebookDetailViewModel {
     }
 
     func updateWeightAndRedistribute(nodeID: UUID, newWeight: Double) {
-        root = GradebookNodeService.updateWeightAndRedistribute(
-            nodeID: nodeID, newWeight: newWeight, root: root, tab: tab, context: context
-        )
+        root = interactor.updateWeightAndRedistribute(nodeID: nodeID, newWeight: newWeight, root: root)
     }
 
     func autoDistributeWeights(for parentID: UUID) {
-        root = GradebookNodeService.autoDistributeWeights(
-            for: parentID, root: root, tab: tab, context: context
-        )
+        root = interactor.autoDistributeWeights(for: parentID, root: root)
     }
 
     func updateNodeTitle(nodeID: UUID, newTitle: String) {
-        root = GradebookNodeService.updateTitle(
-            nodeID: nodeID, newTitle: newTitle, root: root, tab: tab, context: context
-        )
+        root = interactor.updateNodeTitle(nodeID: nodeID, newTitle: newTitle, root: root)
     }
 
     func updateNodeColorStyle(nodeID: UUID, colorStyle: GradeTileColorStyle) {
-        var newRoot = root
-        GradeTileTree.updateNode(root: &newRoot, id: nodeID) { node in
-            node.colorStyle = colorStyle
-        }
-        GradebookRepository.replaceNodeTree(for: tab, root: newRoot, in: context)
-        root = newRoot
+        root = interactor.updateNodeColorStyle(nodeID: nodeID, colorStyle: colorStyle, root: root)
     }
 
     func executeInsertionAction(_ action: InsertionAction, draggedID: UUID) {
-        root = GradebookNodeService.executeInsertionAction(
-            action, draggedID: draggedID, root: root, tab: tab, context: context
-        )
+        root = interactor.executeInsertionAction(action, draggedID: draggedID, root: root)
         refreshRows()
     }
 
@@ -143,18 +128,13 @@ final class GradebookDetailViewModel {
     func setInputValue(_ value: String, rowID: UUID, nodeID: UUID) {
         guard let rowIndex = rows.firstIndex(where: { $0.id == rowID }) else { return }
         rows[rowIndex].inputValues[nodeID] = value
-        GradebookRepository.upsertCellValue(
-            rawValue: value, rowID: rowID, nodeID: nodeID, in: tab, context: context
-        )
+        interactor.setInputValue(value, rowID: rowID, nodeID: nodeID)
     }
 
     // MARK: - Student Mutations
 
     func addStudent(named name: String) {
-        guard let student = GradebookStudentService.addStudent(
-            named: name, schoolClass: schoolClass, tab: tab,
-            inputNodeIDs: inputNodeIDs, context: context
-        ) else { return }
+        guard let student = interactor.addStudent(named: name, inputNodeIDs: inputNodeIDs) else { return }
 
         var values: [UUID: String] = [:]
         for inputID in inputNodeIDs { values[inputID] = "" }
@@ -164,10 +144,7 @@ final class GradebookDetailViewModel {
     }
 
     func addStudents(names: [String]) {
-        let students = GradebookStudentService.addStudents(
-            names: names, schoolClass: schoolClass, tab: tab,
-            inputNodeIDs: inputNodeIDs, context: context
-        )
+        let students = interactor.addStudents(names: names, inputNodeIDs: inputNodeIDs)
         for student in students {
             var values: [UUID: String] = [:]
             for inputID in inputNodeIDs { values[inputID] = "" }
@@ -179,29 +156,24 @@ final class GradebookDetailViewModel {
 
     func deleteStudent(id: UUID) {
         rows.removeAll { $0.id == id }
-        GradebookStudentService.deleteStudent(
-            id: id, schoolClass: schoolClass, context: context
-        )
+        interactor.deleteStudent(id: id)
     }
 
     func renameStudent(studentID: UUID, fullName: String) {
-        GradebookStudentService.renameStudent(
-            studentID: studentID, fullName: fullName, context: context
-        )
+        interactor.renameStudent(studentID: studentID, fullName: fullName)
         if let index = rows.firstIndex(where: { $0.id == studentID }) {
             rows[index].studentName = fullName
         }
     }
 
     func currentStudentName(studentID: UUID) -> String? {
-        let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == studentID })
-        return (try? context.fetch(descriptor))?.first?.fullName
+        interactor.currentStudentName(studentID: studentID)
     }
 
     // MARK: - Root Replacement
 
     func replaceRootAndSyncRows(_ newRoot: GradeTileNode) {
-        GradebookRepository.replaceNodeTree(for: tab, root: newRoot, in: context)
+        interactor.replaceRootAndSyncRows(newRoot)
         root = newRoot
         refreshRows()
     }
@@ -213,35 +185,4 @@ final class GradebookDetailViewModel {
         rows[index].studentName = name
     }
 
-    // MARK: - Private
-
-    private static func buildRows(
-        for schoolClass: SchoolClass,
-        tab: GradebookTabEntity,
-        root: GradeTileNode,
-        context: ModelContext
-    ) -> [StudentGradeRow] {
-        let inputIDs = Set(GradeTileTree.columns(from: root).filter { $0.type == .input }.map { $0.nodeID })
-        let rowEntities = GradebookRepository.rows(for: tab)
-        GradebookRepository.ensureCellValues(
-            for: tab,
-            rowIDs: rowEntities.map(\.id),
-            nodeIDs: inputIDs,
-            context: context
-        )
-
-        return rowEntities.compactMap { rowEntity in
-            guard let student = rowEntity.student else { return nil }
-            var values = GradebookRepository.cellValues(for: rowEntity)
-            values = values.filter { inputIDs.contains($0.key) }
-            for inputID in inputIDs where values[inputID] == nil {
-                values[inputID] = ""
-            }
-            return StudentGradeRow(
-                id: student.id,
-                studentName: student.fullName,
-                inputValues: values
-            )
-        }
-    }
 }
