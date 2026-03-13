@@ -73,7 +73,10 @@ enum GradebookRepository {
     ) {
         guard tab.rows.isEmpty else { return }
 
-        let studentsByID = Dictionary(uniqueKeysWithValues: schoolClass.students.map { ($0.id, $0) })
+        let studentsByID = Dictionary(
+            schoolClass.students.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var insertedStudentIDs = Set<UUID>()
         var sortOrder = 0
 
@@ -114,8 +117,14 @@ enum GradebookRepository {
         state: ClassGradebookState,
         in context: ModelContext
     ) {
-        let rowsByID = Dictionary(uniqueKeysWithValues: rows(for: tab).map { ($0.id, $0) })
-        let nodesByID = Dictionary(uniqueKeysWithValues: flatNodes(for: tab).map { ($0.id, $0) })
+        let rowsByID = Dictionary(
+            rows(for: tab).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let nodesByID = Dictionary(
+            flatNodes(for: tab).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         var hasInserted = false
         for row in state.rows {
@@ -137,10 +146,13 @@ enum GradebookRepository {
 
     @MainActor
     static func cellValues(for row: GradebookRowEntity) -> [UUID: String] {
-        Dictionary(uniqueKeysWithValues: row.cellValues.compactMap { cellValue in
-            guard let nodeID = cellValue.node?.id else { return nil }
-            return (nodeID, cellValue.rawValue)
-        })
+        Dictionary(
+            row.cellValues.compactMap { cellValue in
+                guard let nodeID = cellValue.node?.id else { return nil }
+                return (nodeID, cellValue.rawValue)
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
     }
 
     @MainActor
@@ -184,7 +196,8 @@ enum GradebookRepository {
         in context: ModelContext
     ) {
         guard tab.nodes.isEmpty else { return }
-        let rootEntity = GradebookTreeService.makeEntityTree(from: root, tab: tab)
+        let normalizedRoot = GradeTileTree.normalizedRoot(root)
+        let rootEntity = GradebookTreeService.makeEntityTree(from: normalizedRoot, tab: tab)
         context.insert(rootEntity)
         try? context.save()
     }
@@ -204,6 +217,7 @@ enum GradebookRepository {
         root: GradeTileNode,
         in context: ModelContext
     ) {
+        let root = GradeTileTree.normalizedRoot(root)
         let existingRoots = tab.nodes.filter { $0.parent == nil }
 
         if let existingRoot = existingRoots.first(where: { $0.id == root.id }) {
@@ -264,6 +278,55 @@ enum GradebookRepository {
     }
 
     @MainActor
+    static func moveStudent(
+        _ studentID: UUID,
+        using action: StudentInsertionAction,
+        in schoolClass: SchoolClass,
+        anchorTab: GradebookTabEntity,
+        context: ModelContext
+    ) {
+        let anchorRows = rows(for: anchorTab)
+        guard anchorRows.contains(where: { $0.id == studentID }) else { return }
+
+        var orderedIDs = anchorRows.map(\.id)
+        orderedIDs.removeAll { $0 == studentID }
+
+        let insertionIndex: Int
+        switch action {
+        case .beforeStudent(let targetID):
+            guard let targetIndex = orderedIDs.firstIndex(of: targetID) else { return }
+            insertionIndex = targetIndex
+        case .afterStudent(let targetID):
+            guard let targetIndex = orderedIDs.firstIndex(of: targetID) else { return }
+            insertionIndex = targetIndex + 1
+        }
+
+        orderedIDs.insert(studentID, at: insertionIndex)
+
+        for tab in tabs(for: schoolClass) {
+            let tabRows = rows(for: tab)
+            let rowsByID = Dictionary(
+                tabRows.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+
+            var nextSortOrder = 0
+            for rowID in orderedIDs {
+                guard let row = rowsByID[rowID] else { continue }
+                row.sortOrder = nextSortOrder
+                nextSortOrder += 1
+            }
+
+            for row in tabRows where !orderedIDs.contains(row.id) {
+                row.sortOrder = nextSortOrder
+                nextSortOrder += 1
+            }
+        }
+
+        try? context.save()
+    }
+
+    @MainActor
     static func upsertCellValue(
         rawValue: String,
         rowID: UUID,
@@ -290,8 +353,14 @@ enum GradebookRepository {
         nodeIDs: Set<UUID>,
         context: ModelContext
     ) {
-        let rowsByID = Dictionary(uniqueKeysWithValues: rows(for: tab).map { ($0.id, $0) })
-        let nodesByID = Dictionary(uniqueKeysWithValues: flatNodes(for: tab).map { ($0.id, $0) })
+        let rowsByID = Dictionary(
+            rows(for: tab).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let nodesByID = Dictionary(
+            flatNodes(for: tab).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var hasInserted = false
 
         for rowID in rowIDs {

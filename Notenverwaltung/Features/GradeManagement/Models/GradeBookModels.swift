@@ -50,6 +50,7 @@ struct GradeTileNode: Identifiable, Hashable, Codable {
     var weightPercent: Double
     var isWeightManuallySet: Bool
     var showsAsColumn: Bool
+    var isTechnicalRoot: Bool
     var colorStyle: GradeTileColorStyle
     var children: [GradeTileNode]
 
@@ -60,6 +61,7 @@ struct GradeTileNode: Identifiable, Hashable, Codable {
         weightPercent: Double = 100,
         isWeightManuallySet: Bool = false,
         showsAsColumn: Bool? = nil,
+        isTechnicalRoot: Bool = false,
         colorStyle: GradeTileColorStyle = .automatic,
         children: [GradeTileNode] = []
     ) {
@@ -69,6 +71,7 @@ struct GradeTileNode: Identifiable, Hashable, Codable {
         self.weightPercent = weightPercent
         self.isWeightManuallySet = isWeightManuallySet
         self.showsAsColumn = showsAsColumn ?? true
+        self.isTechnicalRoot = isTechnicalRoot
         self.colorStyle = colorStyle
         self.children = children
     }
@@ -84,6 +87,7 @@ struct GradeTileNode: Identifiable, Hashable, Codable {
         case weightPercent
         case isWeightManuallySet
         case showsAsColumn
+        case isTechnicalRoot
         case colorStyle
         case children
     }
@@ -96,6 +100,7 @@ struct GradeTileNode: Identifiable, Hashable, Codable {
         weightPercent = try container.decode(Double.self, forKey: .weightPercent)
         isWeightManuallySet = try container.decodeIfPresent(Bool.self, forKey: .isWeightManuallySet) ?? false
         showsAsColumn = try container.decode(Bool.self, forKey: .showsAsColumn)
+        isTechnicalRoot = try container.decodeIfPresent(Bool.self, forKey: .isTechnicalRoot) ?? false
         colorStyle = try container.decode(GradeTileColorStyle.self, forKey: .colorStyle)
         children = try container.decode([GradeTileNode].self, forKey: .children)
     }
@@ -108,6 +113,7 @@ struct GradeTileNode: Identifiable, Hashable, Codable {
         try container.encode(weightPercent, forKey: .weightPercent)
         try container.encode(isWeightManuallySet, forKey: .isWeightManuallySet)
         try container.encode(showsAsColumn, forKey: .showsAsColumn)
+        try container.encode(isTechnicalRoot, forKey: .isTechnicalRoot)
         try container.encode(colorStyle, forKey: .colorStyle)
         try container.encode(children, forKey: .children)
     }
@@ -168,7 +174,35 @@ struct ClassGradebooksState: Hashable, Codable {
 }
 
 enum GradeTileTree {
+    static func technicalRoot(
+        id: UUID = UUID(),
+        children: [GradeTileNode] = []
+    ) -> GradeTileNode {
+        GradeTileNode(
+            id: id,
+            title: "",
+            type: .calculation,
+            weightPercent: 100,
+            showsAsColumn: false,
+            isTechnicalRoot: true,
+            children: children
+        )
+    }
+
+    static func normalizedRoot(_ root: GradeTileNode) -> GradeTileNode {
+        guard !root.isTechnicalRoot else { return root }
+        return technicalRoot(children: [root])
+    }
+
     static func standardRoot() -> GradeTileNode {
+        technicalRoot(children: [standardVisibleRoot()])
+    }
+
+    static func emptyRoot() -> GradeTileNode {
+        technicalRoot(children: [emptyVisibleRoot()])
+    }
+
+    private static func standardVisibleRoot() -> GradeTileNode {
         GradeTileNode(
             title: "Schuljahr",
             type: .calculation,
@@ -233,7 +267,7 @@ enum GradeTileTree {
         )
     }
 
-    static func emptyRoot() -> GradeTileNode {
+    private static func emptyVisibleRoot() -> GradeTileNode {
         GradeTileNode(
             title: "Schuljahr",
             type: .calculation,

@@ -38,6 +38,7 @@ final class GradebookDetailViewModel {
     var zoomScale: CGFloat = 1.0
     var baseZoomScale: CGFloat = 1.0
     var movingNodeID: UUID? = nil
+    var movingStudentID: UUID? = nil
     var settingsTarget: TileSettingsTarget? = nil
     var activeInputCell: GradeInputCellTarget? = nil
     var inputPopupDraft: String = ""
@@ -162,6 +163,7 @@ final class GradebookDetailViewModel {
     func deleteStudent(id: UUID) {
         rows.removeAll { $0.id == id }
         interactor.deleteStudent(id: id)
+        if movingStudentID == id { movingStudentID = nil }
     }
 
     func renameStudent(studentID: UUID, fullName: String) {
@@ -173,6 +175,11 @@ final class GradebookDetailViewModel {
 
     func currentStudentName(studentID: UUID) -> String? {
         interactor.currentStudentName(studentID: studentID)
+    }
+
+    func moveStudent(using action: StudentInsertionAction, studentID: UUID) {
+        interactor.moveStudent(studentID, using: action)
+        refreshRows()
     }
 
     // MARK: - Root Replacement

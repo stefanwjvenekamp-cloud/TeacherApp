@@ -39,6 +39,7 @@ final class GradebookNodeEntity {
     var weightPercent: Double
     var isWeightManuallySet: Bool
     var showsAsColumn: Bool
+    var isTechnicalRoot: Bool
     var colorStyleRawValue: String
     var sortOrder: Int
 
@@ -57,6 +58,7 @@ final class GradebookNodeEntity {
         weightPercent: Double,
         isWeightManuallySet: Bool = false,
         showsAsColumn: Bool = true,
+        isTechnicalRoot: Bool = false,
         colorStyle: GradeTileColorStyle = .automatic,
         sortOrder: Int,
         tab: GradebookTabEntity? = nil,
@@ -68,6 +70,7 @@ final class GradebookNodeEntity {
         self.weightPercent = weightPercent
         self.isWeightManuallySet = isWeightManuallySet
         self.showsAsColumn = showsAsColumn
+        self.isTechnicalRoot = isTechnicalRoot
         self.colorStyleRawValue = colorStyle.rawValue
         self.sortOrder = sortOrder
         self.tab = tab

@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct HeaderTileView: View {
@@ -24,6 +25,7 @@ struct HeaderTileView: View {
     let onDelete: () -> Void
     let onTitleSubmit: (String) -> Void
     let onStartMove: () -> Void
+    let dragProvider: () -> NSItemProvider
     
     @State private var showCustomWeightSheet = false
     @State private var customWeightText = ""
@@ -41,21 +43,11 @@ struct HeaderTileView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            centeredTitle
-                .frame(width: max(width - 16, 0), height: min(height, 38))
-                .padding(.horizontal, 8)
-                .overlay(alignment: .leading) {
-                    leadingControls
-                        .padding(.leading, 8)
-                }
-                .overlay(alignment: .trailing) {
-                    trailingControls
-                        .padding(.trailing, 8)
-                }
-
-            if height > 38 {
-                Spacer(minLength: 0)
+        Group {
+            if isLeaf {
+                leafContent
+            } else {
+                groupedContent
             }
         }
         .frame(width: width, height: height)
@@ -82,7 +74,18 @@ struct HeaderTileView: View {
             }
         }
         .opacity(isMoving ? 0.85 : 1.0)
+        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: isLeaf ? leafCornerRadius : 4, style: .continuous))
+        .onDrag {
+            dragProvider()
+        }
         .contextMenu {
+            if !isRoot {
+                Button {
+                    onStartMove()
+                } label: {
+                    Label("Verschieben", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                }
+            }
             if !isRoot {
                 Button(role: .destructive) {
                     onDelete()
@@ -91,12 +94,6 @@ struct HeaderTileView: View {
                 }
             }
         }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                guard !isRoot else { return }
-                onDelete()
-            }
-        )
         .sheet(isPresented: $showCustomWeightSheet) {
             NavigationStack {
                 Form {
@@ -128,6 +125,42 @@ struct HeaderTileView: View {
         }
     }
 
+    private var leafContent: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
+                leadingControls
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, leafControlTopPadding)
+            .frame(height: leafControlRowHeight)
+
+            centeredTitle
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, leafTitleHorizontalPadding)
+                .padding(.top, leafTitleTopPadding)
+                .padding(.bottom, leafTitleBottomPadding)
+
+            Spacer(minLength: leafBottomSpacing)
+        }
+    }
+
+    private var groupedContent: some View {
+        VStack(spacing: 0) {
+            centeredTitle
+                .frame(width: max(width - 16, 0), height: min(height, 38))
+                .padding(.horizontal, 8)
+                .overlay(alignment: .leading) {
+                    leadingControls
+                        .padding(.leading, 8)
+                }
+
+            if height > 38 {
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
     private func commitTitleEdit() {
         onTitleSubmit(editingTitle)
         isEditing = false
@@ -155,7 +188,7 @@ struct HeaderTileView: View {
                 Text(node.title)
                     .font(titleFont)
                     .foregroundStyle(Color.Table.textPrimary)
-                    .lineLimit(1)
+                    .lineLimit(isLeaf ? 2 : 1)
                     .truncationMode(.tail)
                     .minimumScaleFactor(0.8)
                     .onTapGesture(count: 2) {
@@ -185,12 +218,7 @@ struct HeaderTileView: View {
                 }
                 .buttonStyle(.plain)
             }
-        }
-    }
 
-    @ViewBuilder
-    private var trailingControls: some View {
-        HStack(spacing: 6) {
             if parentIsCalculation {
                 Menu {
                     ForEach(WeightOption.availableWeights) { option in
@@ -284,7 +312,35 @@ struct HeaderTileView: View {
     }
 
     private var titleHorizontalPadding: CGFloat {
-        max(leadingReservedWidth, trailingReservedWidth) + 8
+        isLeaf ? 8 : leadingReservedWidth + 8
+    }
+
+    private var leafControlTopPadding: CGFloat {
+        leafIsCompact ? 4 : min(max(height * 0.08, 6), 12)
+    }
+
+    private var leafControlRowHeight: CGFloat {
+        leafIsCompact ? 22 : min(max(height * 0.22, 24), 36)
+    }
+
+    private var leafTitleHorizontalPadding: CGFloat {
+        leafIsCompact ? min(max(width * 0.08, 8), 14) : min(max(width * 0.10, 10), 18)
+    }
+
+    private var leafTitleTopPadding: CGFloat {
+        leafIsCompact ? 4 : min(max(height * 0.07, 5), 12)
+    }
+
+    private var leafTitleBottomPadding: CGFloat {
+        leafIsCompact ? 4 : min(max(height * 0.09, 6), 14)
+    }
+
+    private var leafBottomSpacing: CGFloat {
+        leafIsCompact ? 2 : min(max(height * 0.08, 4), 12)
+    }
+
+    private var leafIsCompact: Bool {
+        height <= 56
     }
 
     private var effectiveTitleHorizontalPadding: CGFloat {
@@ -293,12 +349,11 @@ struct HeaderTileView: View {
     }
 
     private var leadingReservedWidth: CGFloat {
-        guard !isRoot else { return 0 }
-        return 24 + 6
-    }
+        var width: CGFloat = 0
 
-    private var trailingReservedWidth: CGFloat {
-        var width: CGFloat = 26
+        if !isRoot {
+            width += 24 + 6
+        }
 
         if parentIsCalculation {
             width += 6 + 50
@@ -371,6 +426,13 @@ struct HeaderTileView: View {
     }
 
     private var titleFont: Font {
+        if isLeaf {
+            let size = leafIsCompact
+                ? min(max(height * 0.18, 11), 12.5)
+                : min(max(height * 0.15, 12.5), 15)
+            return .system(size: size, weight: .semibold)
+        }
+
         let normalizedLevel = min(max(level, 0), 3)
         switch normalizedLevel {
         case 0:

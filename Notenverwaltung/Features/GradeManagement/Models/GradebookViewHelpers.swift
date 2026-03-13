@@ -38,6 +38,18 @@ enum InsertionAction {
     case appendToParent(UUID)
 }
 
+struct StudentInsertionSlot: Identifiable {
+    let id: String
+    let y: CGFloat
+    let slotHeight: CGFloat
+    let action: StudentInsertionAction
+}
+
+enum StudentInsertionAction {
+    case beforeStudent(UUID)
+    case afterStudent(UUID)
+}
+
 enum GradeInputCategory: String, CaseIterable, Identifiable {
     case numbers = "Zahlen"
     case text = "Text"

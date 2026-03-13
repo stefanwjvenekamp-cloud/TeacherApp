@@ -15,42 +15,40 @@ import AppKit
 
 struct GradeBookMainView: View {
     @Environment(\.modelContext) private var modelContext
-    @State private var classes: [SchoolClass] = []
-    @State private var hasLoaded = false
+    @Query(sort: [SortDescriptor(\SchoolClass.name, order: .forward)]) private var classes: [SchoolClass]
+    @State private var hasInitialized = false
 
     var body: some View {
         ZStack {
             Color.systemGroupedBackground
                 .ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: 20) {
-                    header
-
-                    LazyVStack(spacing: 16) {
-                        ForEach(classes) { schoolClass in
-                            NavigationLink {
-                                ClassGradebooksDetailView(
-                                    schoolClass: schoolClass
-                                )
-                            } label: {
-                                ClassCard(
-                                    schoolClass: schoolClass,
-                                    studentCount: schoolClass.students.count
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
+            List {
+                Section {
+                ForEach(classes) { schoolClass in
+                    NavigationLink {
+                        ClassGradebooksDetailContainer(schoolClassID: schoolClass.id)
+                    } label: {
+                        ClassCard(
+                            schoolClass: schoolClass,
+                            studentCount: schoolClass.students.count
+                        )
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 24, bottom: 8, trailing: 24))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+                } header: {
+                    header
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
         .navigationTitle("TeacherApp")
         .adaptiveNavigationBarTitleDisplayMode(.large)
         .task {
-            loadDataIfNeeded()
+            initializeIfNeeded()
         }
     }
 
@@ -64,32 +62,49 @@ struct GradeBookMainView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
         .padding(.top, 8)
+        .textCase(nil)
     }
 
-    private func loadDataIfNeeded() {
-        guard !hasLoaded else { return }
-        hasLoaded = true
+    private func initializeIfNeeded() {
+        guard !hasInitialized else { return }
+        hasInitialized = true
 
-        let existingClasses = fetchClasses()
-        if existingClasses.isEmpty {
+        if classes.isEmpty {
             MockSeedDataService.seedIfNeeded(context: modelContext)
         }
 
-        classes = fetchClasses()
-
-        // Ensure each class has at least one tab entity
-        for schoolClass in classes {
-            GradebookRepository.ensureDefaultTab(for: schoolClass, in: modelContext)
-        }
-    }
-
-    private func fetchClasses() -> [SchoolClass] {
         let descriptor = FetchDescriptor<SchoolClass>(
             sortBy: [SortDescriptor(\.name, order: .forward)]
         )
-        return (try? modelContext.fetch(descriptor)) ?? []
+        let currentClasses = (try? modelContext.fetch(descriptor)) ?? []
+        for schoolClass in currentClasses {
+            GradebookRepository.ensureDefaultTab(for: schoolClass, in: modelContext)
+        }
+    }
+}
+
+private struct ClassGradebooksDetailContainer: View {
+    @Environment(\.modelContext) private var modelContext
+    let schoolClassID: UUID
+
+    var body: some View {
+        if let schoolClass {
+            ClassGradebooksDetailView(schoolClass: schoolClass)
+        } else {
+            ContentUnavailableView(
+                "Klasse nicht verfügbar",
+                systemImage: "exclamationmark.triangle",
+                description: Text("Die ausgewählte Klasse konnte nicht geladen werden.")
+            )
+        }
+    }
+
+    private var schoolClass: SchoolClass? {
+        let descriptor = FetchDescriptor<SchoolClass>(
+            predicate: #Predicate { $0.id == schoolClassID }
+        )
+        return (try? modelContext.fetch(descriptor))?.first
     }
 }
 
