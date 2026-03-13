@@ -14,7 +14,18 @@ struct GradebookDetailInteractor {
     }
 
     func loadRoot() -> GradeTileNode {
-        GradebookRepository.rootNode(for: tab) ?? GradeTileTree.emptyRoot()
+        if let persistedRoot = GradebookRepository.rootNode(for: tab) {
+            let normalizedRoot = GradeTileTree.normalizedRoot(persistedRoot)
+            if normalizedRoot.id != persistedRoot.id {
+                GradebookRepository.replaceNodeTree(for: tab, root: normalizedRoot, in: context)
+            }
+            return normalizedRoot
+        }
+
+        let emptyRoot = GradeTileTree.emptyRoot()
+        let normalizedRoot = GradeTileTree.normalizedRoot(emptyRoot)
+        GradebookRepository.replaceNodeTree(for: tab, root: normalizedRoot, in: context)
+        return normalizedRoot
     }
 
     func buildRows(root: GradeTileNode) -> [StudentGradeRow] {
@@ -169,6 +180,16 @@ struct GradebookDetailInteractor {
         GradebookStudentService.renameStudent(
             studentID: studentID,
             fullName: fullName,
+            context: context
+        )
+    }
+
+    func moveStudent(_ studentID: UUID, using action: StudentInsertionAction) {
+        GradebookRepository.moveStudent(
+            studentID,
+            using: action,
+            in: schoolClass,
+            anchorTab: tab,
             context: context
         )
     }

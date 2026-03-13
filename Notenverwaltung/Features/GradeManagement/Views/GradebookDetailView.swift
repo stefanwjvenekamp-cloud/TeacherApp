@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -41,8 +42,16 @@ struct GradebookDetailView: View {
         Set(columns.map(\.nodeID))
     }
 
+    var visibleHeaderRoots: [GradeTileNode] {
+        viewModel.root.isTechnicalRoot ? viewModel.root.children : [viewModel.root]
+    }
+
+    func isProtectedRoot(_ node: GradeTileNode) -> Bool {
+        node.isTechnicalRoot
+    }
+
     var headerDepth: Int {
-        max(depth(of: viewModel.root), 1)
+        max(visibleHeaderRoots.map(depth(of:)).max() ?? 0, 1)
     }
 
     var headerHeight: CGFloat {
@@ -133,8 +142,12 @@ struct GradebookDetailView: View {
                     onTitleSubmit: { viewModel.updateNodeTitle(nodeID: node.id, newTitle: $0) },
                     onStartMove: {
                         withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.movingStudentID = nil
                             viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
                         }
+                    },
+                    dragProvider: {
+                        dragProvider(for: node.id)
                     }
                 )
                 .allowsHitTesting(isInMoveMode ? thisTileIsMoving : true)
@@ -169,8 +182,12 @@ struct GradebookDetailView: View {
                         onTitleSubmit: { viewModel.updateNodeTitle(nodeID: node.id, newTitle: $0) },
                         onStartMove: {
                             withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.movingStudentID = nil
                                 viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
                             }
+                        },
+                        dragProvider: {
+                            dragProvider(for: node.id)
                         }
                     )
                     .allowsHitTesting(isInMoveMode ? thisTileIsMoving : true)
@@ -239,22 +256,98 @@ struct GradebookDetailView: View {
                     viewModel.movingNodeID = nil
                 }
             } label: {
-                ZStack {
-                    Color.clear
-                        .frame(width: slot.slotWidth, height: slot.slotHeight)
-                        .contentShape(Rectangle())
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(Color.blue.opacity(0.6))
-                        .frame(width: 3, height: slot.slotHeight)
-                    Circle()
-                        .fill(Color.blue)
-                        .frame(width: 10, height: 10)
-                        .offset(y: -slot.slotHeight / 2 + 5)
-                }
+                insertionSlotLabel(slot)
             }
             .buttonStyle(.plain)
             .zIndex(50)
             .offset(x: slot.x, y: slot.y)
+            .onDrop(of: [UTType.plainText.identifier], isTargeted: nil) { providers in
+                handleInsertionDrop(providers: providers, action: slot.action)
+            }
+        }
+    }
+
+    private func dragProvider(for nodeID: UUID) -> NSItemProvider {
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.movingNodeID = nodeID
+            }
+        }
+
+        return NSItemProvider(object: nodeID.uuidString as NSString)
+    }
+
+    private func handleInsertionDrop(providers: [NSItemProvider], action: InsertionAction) -> Bool {
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else {
+            return false
+        }
+
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let rawValue = object as? String ?? (object as? NSString).map(String.init),
+                  let draggedID = UUID(uuidString: rawValue) else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.executeInsertionAction(action, draggedID: draggedID)
+                    viewModel.movingNodeID = nil
+                }
+            }
+        }
+
+        return true
+    }
+
+    @ViewBuilder
+    private func insertionSlotLabel(_ slot: InsertionSlot) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.001))
+
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(Color.Table.textSecondary.opacity(0.34))
+                .frame(width: 2, height: max(slot.slotHeight - 18, 22))
+
+            slotDirectionalMarker(for: slot.action, height: slot.slotHeight)
+        }
+        .frame(width: slot.slotWidth, height: slot.slotHeight)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func slotDirectionalMarker(for action: InsertionAction, height: CGFloat) -> some View {
+        switch action {
+        case .beforeSibling:
+            HStack(spacing: 0) {
+                Image(systemName: "arrowtriangle.left.fill")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(Color.Table.textSecondary.opacity(0.65))
+                Rectangle()
+                    .fill(Color.Table.textSecondary.opacity(0.34))
+                    .frame(width: 8, height: 1.5)
+            }
+            .offset(x: -6)
+        case .afterSibling:
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(Color.Table.textSecondary.opacity(0.34))
+                    .frame(width: 8, height: 1.5)
+                Image(systemName: "arrowtriangle.right.fill")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(Color.Table.textSecondary.opacity(0.65))
+            }
+            .offset(x: 6)
+        case .appendToParent:
+            VStack(spacing: 0) {
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(Color.Table.textSecondary.opacity(0.65))
+                Rectangle()
+                    .fill(Color.Table.textSecondary.opacity(0.34))
+                    .frame(width: 1.5, height: min(max(height * 0.22, 8), 16))
+            }
+            .offset(y: -(max(height - 22, 0) / 2))
         }
     }
 
@@ -262,7 +355,7 @@ struct GradebookDetailView: View {
         var slots: [InsertionSlot] = []
         collectInsertionSlotsV2(
             node: viewModel.root,
-            level: 0,
+            level: viewModel.root.isTechnicalRoot ? -1 : 0,
             xOffset: 0,
             movingID: movingID,
             widthCache: widthCache,
@@ -289,7 +382,7 @@ struct GradebookDetailView: View {
         let childLevel = level + 1
         let slotY = CGFloat(childLevel) * cellHeight
         let slotH = CGFloat(headerDepth - childLevel) * cellHeight
-        let lineWidth: CGFloat = 28
+        let lineWidth: CGFloat = 52
 
         var childXStart = xOffset
         if visibleColumnIDs.contains(node.id) {

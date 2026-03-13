@@ -222,6 +222,30 @@ enum GradebookNodeService {
         tab: GradebookTabEntity,
         context: ModelContext
     ) -> GradeTileNode {
+        guard draggedID != root.id else { return root }
+        let preservedNodeValues = snapshotCellValues(for: draggedID, root: root, tab: tab)
+
+        let sourceParentID = GradeTileTree.findParentID(root: root, childID: draggedID)
+        let destinationParentID: UUID
+
+        switch action {
+        case .beforeSibling(let siblingID), .afterSibling(let siblingID):
+            guard siblingID != draggedID,
+                  GradeTileTree.findNode(in: root, id: siblingID) != nil,
+                  !GradeTileTree.isDescendant(root: root, ancestorID: draggedID, possibleDescendantID: siblingID),
+                  let parentID = GradeTileTree.findParentID(root: root, childID: siblingID) else {
+                return root
+            }
+            destinationParentID = parentID
+        case .appendToParent(let parentID):
+            guard parentID != draggedID,
+                  GradeTileTree.findNode(in: root, id: parentID) != nil,
+                  !GradeTileTree.isDescendant(root: root, ancestorID: draggedID, possibleDescendantID: parentID) else {
+                return root
+            }
+            destinationParentID = parentID
+        }
+
         var root = root
         guard let moved = GradeTileTree.removeNode(root: &root, id: draggedID) else { return root }
 
@@ -235,7 +259,16 @@ enum GradebookNodeService {
         }
 
         GradebookRepository.replaceNodeTree(for: tab, root: root, in: context)
+        if sourceParentID != destinationParentID {
+            if let sourceParentID, GradeTileTree.findNode(in: root, id: sourceParentID) != nil {
+                root = autoDistributeWeights(for: sourceParentID, root: root, tab: tab, context: context)
+            }
+            if GradeTileTree.findNode(in: root, id: destinationParentID) != nil {
+                root = autoDistributeWeights(for: destinationParentID, root: root, tab: tab, context: context)
+            }
+        }
         syncCellValuesToStructure(root: root, tab: tab, context: context)
+        restoreCellValues(preservedNodeValues, in: tab, context: context)
         return root
     }
 
@@ -325,5 +358,44 @@ enum GradebookNodeService {
             nodeIDs: validInputIDs,
             context: context
         )
+    }
+
+    private static func snapshotCellValues(
+        for movedNodeID: UUID,
+        root: GradeTileNode,
+        tab: GradebookTabEntity
+    ) -> [UUID: [UUID: String]] {
+        let movedInputNodeIDs = collectInputNodeIDs(in: root, nodeID: movedNodeID)
+        guard !movedInputNodeIDs.isEmpty else { return [:] }
+
+        var result: [UUID: [UUID: String]] = [:]
+        for row in GradebookRepository.rows(for: tab) {
+            let preservedValues = GradebookRepository.cellValues(for: row)
+                .filter { movedInputNodeIDs.contains($0.key) }
+            if !preservedValues.isEmpty {
+                result[row.id] = preservedValues
+            }
+        }
+        return result
+    }
+
+    private static func restoreCellValues(
+        _ preservedNodeValues: [UUID: [UUID: String]],
+        in tab: GradebookTabEntity,
+        context: ModelContext
+    ) {
+        guard !preservedNodeValues.isEmpty else { return }
+
+        for (rowID, nodeValues) in preservedNodeValues {
+            for (nodeID, rawValue) in nodeValues {
+                GradebookRepository.upsertCellValue(
+                    rawValue: rawValue,
+                    rowID: rowID,
+                    nodeID: nodeID,
+                    in: tab,
+                    context: context
+                )
+            }
+        }
     }
 }
