@@ -61,6 +61,15 @@ struct GradebookDetailInteractor {
         )
     }
 
+    func mergeSiblingNodesUnderNewParent(nodeIDs: [UUID], root: GradeTileNode) -> GradeTileNode {
+        GradebookNodeService.mergeSiblingNodesUnderNewParent(
+            nodeIDs: nodeIDs,
+            root: root,
+            tab: tab,
+            context: context
+        )
+    }
+
     func deleteNode(id: UUID, root: GradeTileNode) -> GradeTileNode {
         GradebookNodeService.deleteNode(
             id: id,

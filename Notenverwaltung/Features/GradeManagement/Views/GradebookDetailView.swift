@@ -105,6 +105,7 @@ struct GradebookDetailView: View {
         let isLeaf = node.children.isEmpty
         let thisTileIsMoving = viewModel.movingNodeID == node.id
         let isInMoveMode = viewModel.movingNodeID != nil
+        let canMergeSiblings = canMergeSiblings(for: node)
 
         if isLeaf {
             return AnyView(
@@ -124,6 +125,8 @@ struct GradebookDetailView: View {
                     onAddInput: { viewModel.addChild(to: node.id, type: .input) },
                     onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
                     onAddSiblingArea: { viewModel.addSiblingArea(after: node.id) },
+                    canMergeSiblings: canMergeSiblings,
+                    onMergeSiblings: { mergeSiblings(for: node) },
                     onOpenSettings: { viewModel.settingsTarget = TileSettingsTarget(id: node.id) },
                     onAutoDistribute: { viewModel.autoDistributeWeights(for: node.id) },
                     onDelete: { requestDeleteNode(for: node.id) },
@@ -158,6 +161,8 @@ struct GradebookDetailView: View {
                         onAddInput: { viewModel.addChild(to: node.id, type: .input) },
                         onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
                         onAddSiblingArea: { viewModel.addSiblingArea(after: node.id) },
+                        canMergeSiblings: canMergeSiblings,
+                        onMergeSiblings: { mergeSiblings(for: node) },
                         onOpenSettings: { viewModel.settingsTarget = TileSettingsTarget(id: node.id) },
                         onAutoDistribute: { viewModel.autoDistributeWeights(for: node.id) },
                         onDelete: { requestDeleteNode(for: node.id) },
@@ -197,6 +202,29 @@ struct GradebookDetailView: View {
                 .frame(width: nodeWidth, height: availableHeight)
             )
         }
+    }
+
+    private func canMergeSiblings(for node: GradeTileNode) -> Bool {
+        guard node.type == .calculation,
+              let siblingIDs = siblingNodeIDs(for: node.id)
+        else {
+            return false
+        }
+        return siblingIDs.count >= 2
+    }
+
+    private func mergeSiblings(for node: GradeTileNode) {
+        guard let siblingIDs = siblingNodeIDs(for: node.id), siblingIDs.count >= 2 else { return }
+        viewModel.mergeSiblingNodesUnderNewParent(nodeIDs: siblingIDs)
+    }
+
+    private func siblingNodeIDs(for nodeID: UUID) -> [UUID]? {
+        guard let parentID = GradeTileTree.findParentID(root: viewModel.root, childID: nodeID),
+              let parentNode = GradeTileTree.findNode(in: viewModel.root, id: parentID)
+        else {
+            return nil
+        }
+        return parentNode.children.map(\.id)
     }
 
     // MARK: - Insertion Slots
