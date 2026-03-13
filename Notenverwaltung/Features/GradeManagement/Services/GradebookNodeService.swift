@@ -41,6 +41,74 @@ enum GradebookNodeService {
         return root
     }
 
+    /// Merge sibling nodes under a newly created calculation parent.
+    static func mergeSiblingNodesUnderNewParent(
+        nodeIDs: [UUID],
+        root: GradeTileNode,
+        tab: GradebookTabEntity,
+        context: ModelContext
+    ) -> GradeTileNode {
+        guard nodeIDs.count >= 2 else { return root }
+
+        var seenIDs = Set<UUID>()
+        for nodeID in nodeIDs where !seenIDs.insert(nodeID).inserted {
+            return root
+        }
+
+        guard let firstNodeID = nodeIDs.first,
+              firstNodeID != root.id,
+              let parentID = GradeTileTree.findParentID(root: root, childID: firstNodeID),
+              let parentNode = GradeTileTree.findNode(in: root, id: parentID)
+        else {
+            return root
+        }
+
+        for nodeID in nodeIDs {
+            guard nodeID != root.id,
+                  GradeTileTree.findNode(in: root, id: nodeID) != nil,
+                  GradeTileTree.findParentID(root: root, childID: nodeID) == parentID
+            else {
+                return root
+            }
+        }
+
+        let mergedNodeIDs = Set(nodeIDs)
+        let mergedChildren = parentNode.children.filter { mergedNodeIDs.contains($0.id) }
+        guard mergedChildren.count == nodeIDs.count else { return root }
+
+        let newParent = GradeTileNode(
+            title: "Neuer Oberbereich",
+            type: .calculation,
+            weightPercent: 0,
+            children: mergedChildren
+        )
+
+        var updatedRoot = root
+        GradeTileTree.updateNode(root: &updatedRoot, id: parentID) { parent in
+            var updatedChildren: [GradeTileNode] = []
+            var insertedParent = false
+
+            for child in parent.children {
+                if mergedNodeIDs.contains(child.id) {
+                    if !insertedParent {
+                        updatedChildren.append(newParent)
+                        insertedParent = true
+                    }
+                    continue
+                }
+                updatedChildren.append(child)
+            }
+
+            parent.children = updatedChildren
+        }
+
+        GradebookRepository.replaceNodeTree(for: tab, root: updatedRoot, in: context)
+        updatedRoot = autoDistributeWeights(for: newParent.id, root: updatedRoot, tab: tab, context: context)
+        updatedRoot = autoDistributeWeights(for: parentID, root: updatedRoot, tab: tab, context: context)
+        syncCellValuesToStructure(root: updatedRoot, tab: tab, context: context)
+        return updatedRoot
+    }
+
     /// Delete a node and clean up cell values for removed input nodes.
     static func deleteNode(
         id: UUID,

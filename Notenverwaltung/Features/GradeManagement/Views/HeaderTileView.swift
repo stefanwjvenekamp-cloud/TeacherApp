@@ -17,6 +17,8 @@ struct HeaderTileView: View {
     let onAddInput: () -> Void
     let onAddCalculation: () -> Void
     let onAddSiblingArea: () -> Void
+    let canMergeSiblings: Bool
+    let onMergeSiblings: () -> Void
     let onOpenSettings: () -> Void
     let onAutoDistribute: () -> Void
     let onDelete: () -> Void
@@ -40,137 +42,17 @@ struct HeaderTileView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                if !isRoot {
-                    Button {
-                        onStartMove()
-                    } label: {
-                        Image(systemName: isMoving ? "arrow.up.and.down.and.arrow.left.and.right" : "line.3.horizontal")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(isMoving ? Color.blue : Color.Table.textSecondary.opacity(0.6))
-                            .frame(width: 24, height: 26)
-                            .background(isMoving ? Color.blue.opacity(0.12) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .layoutPriority(1)
+            centeredTitle
+                .frame(width: max(width - 16, 0), height: min(height, 38))
+                .padding(.horizontal, 8)
+                .overlay(alignment: .leading) {
+                    leadingControls
+                        .padding(.leading, 8)
                 }
-
-                if isEditing {
-                    TextField("", text: $editingTitle)
-                        .font(titleFont)
-                        .textFieldStyle(.plain)
-                        .foregroundStyle(Color.Table.textPrimary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .focused($isTitleFieldFocused)
-                        .onSubmit(commitTitleEdit)
-                        .onChange(of: isTitleFieldFocused) { _, isFocused in
-                            if !isFocused && isEditing {
-                                commitTitleEdit()
-                            }
-                        }
-                } else {
-                    Text(node.title)
-                        .font(titleFont)
-                        .foregroundStyle(Color.Table.textPrimary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .onTapGesture(count: 2) {
-                            editingTitle = node.title
-                            isEditing = true
-                            isTitleFieldFocused = true
-                        }
+                .overlay(alignment: .trailing) {
+                    trailingControls
+                        .padding(.trailing, 8)
                 }
-
-                if parentIsCalculation {
-                    Menu {
-                        ForEach(WeightOption.availableWeights) { option in
-                            Button(option.label) {
-                                onWeightChange(option.value)
-                            }
-                        }
-                        Divider()
-                        Button("Eigene Eingabe…") {
-                            customWeightText = String(format: "%.2f", node.weightPercent).replacingOccurrences(of: ".00", with: "")
-                            showCustomWeightSheet = true
-                        }
-                    } label: {
-                        Text(weightLabel(node.weightPercent))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.blue)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .strokeBorder(Color.Table.border, lineWidth: 0.8)
-                            }
-                    }
-                    .layoutPriority(1)
-                }
-
-                if node.type == .calculation {
-                    Menu {
-                        if !isRoot {
-                            Button {
-                                onAddSiblingArea()
-                            } label: {
-                                Label("Bereich gleiche Ebene", systemImage: "folder.badge.plus")
-                            }
-                        }
-                        Button {
-                            onAddCalculation()
-                        } label: {
-                            Label("Bereich Ebene darunter", systemImage: "folder")
-                        }
-                        Divider()
-                        Button {
-                            onAddInput()
-                        } label: {
-                            Label("Notenspalte", systemImage: "tablecells")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color.Table.textSecondary)
-                            .padding(5)
-                            .background(Color.Table.hover)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .strokeBorder(Color.Table.border, lineWidth: 0.8)
-                            }
-                    }
-                    .layoutPriority(1)
-
-                    if showWeightWarning {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.orange)
-                            .layoutPriority(1)
-                    }
-                }
-
-                Button {
-                    onOpenSettings()
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.Table.textSecondary)
-                        .padding(5)
-                        .background(Color.Table.hover)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Color.Table.border, lineWidth: 0.8)
-                        }
-                }
-                .buttonStyle(.plain)
-                .layoutPriority(1)
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 8)
-            .frame(height: min(height, 38))
 
             if height > 38 {
                 Spacer(minLength: 0)
@@ -250,6 +132,186 @@ struct HeaderTileView: View {
         onTitleSubmit(editingTitle)
         isEditing = false
         isTitleFieldFocused = false
+    }
+
+    @ViewBuilder
+    private var centeredTitle: some View {
+        Group {
+            if isEditing {
+                TextField("", text: $editingTitle)
+                    .font(titleFont)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Color.Table.textPrimary)
+                    .lineLimit(1)
+                    .focused($isTitleFieldFocused)
+                    .onSubmit(commitTitleEdit)
+                    .onChange(of: isTitleFieldFocused) { _, isFocused in
+                        if !isFocused && isEditing {
+                            commitTitleEdit()
+                        }
+                    }
+            } else {
+                Text(node.title)
+                    .font(titleFont)
+                    .foregroundStyle(Color.Table.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.8)
+                    .onTapGesture(count: 2) {
+                        editingTitle = node.title
+                        isEditing = true
+                        isTitleFieldFocused = true
+                    }
+            }
+        }
+        .frame(width: max(width - 16, 0), alignment: .center)
+        .padding(.horizontal, effectiveTitleHorizontalPadding)
+    }
+
+    @ViewBuilder
+    private var leadingControls: some View {
+        HStack(spacing: 6) {
+            if !isRoot {
+                Button {
+                    onStartMove()
+                } label: {
+                    Image(systemName: isMoving ? "arrow.up.and.down.and.arrow.left.and.right" : "line.3.horizontal")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(isMoving ? Color.blue : Color.Table.textSecondary.opacity(0.6))
+                        .frame(width: 24, height: 26)
+                        .background(isMoving ? Color.blue.opacity(0.12) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var trailingControls: some View {
+        HStack(spacing: 6) {
+            if parentIsCalculation {
+                Menu {
+                    ForEach(WeightOption.availableWeights) { option in
+                        Button(option.label) {
+                            onWeightChange(option.value)
+                        }
+                    }
+                    Divider()
+                    Button("Eigene Eingabe…") {
+                        customWeightText = String(format: "%.2f", node.weightPercent).replacingOccurrences(of: ".00", with: "")
+                        showCustomWeightSheet = true
+                    }
+                } label: {
+                    Text(weightLabel(node.weightPercent))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.Table.border, lineWidth: 0.8)
+                        }
+                }
+            }
+
+            if node.type == .calculation {
+                Menu {
+                    if !isRoot {
+                        Button {
+                            onAddSiblingArea()
+                        } label: {
+                            Label("Bereich gleiche Ebene", systemImage: "folder.badge.plus")
+                        }
+                    }
+                    Button {
+                        onAddCalculation()
+                    } label: {
+                        Label("Bereich Ebene darunter", systemImage: "folder")
+                    }
+                    if canMergeSiblings {
+                        Button {
+                            onMergeSiblings()
+                        } label: {
+                            Label("Zusammenführen", systemImage: "arrow.triangle.merge")
+                        }
+                    }
+                    Divider()
+                    Button {
+                        onAddInput()
+                    } label: {
+                        Label("Notenspalte", systemImage: "tablecells")
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.Table.textSecondary)
+                        .padding(5)
+                        .background(Color.Table.hover)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.Table.border, lineWidth: 0.8)
+                        }
+                }
+
+                if showWeightWarning {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Button {
+                onOpenSettings()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.Table.textSecondary)
+                    .padding(5)
+                    .background(Color.Table.hover)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color.Table.border, lineWidth: 0.8)
+                    }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var titleHorizontalPadding: CGFloat {
+        max(leadingReservedWidth, trailingReservedWidth) + 8
+    }
+
+    private var effectiveTitleHorizontalPadding: CGFloat {
+        let maxAllowedPaddingPerSide = max((width - 32) / 2, 0)
+        return min(titleHorizontalPadding, maxAllowedPaddingPerSide)
+    }
+
+    private var leadingReservedWidth: CGFloat {
+        guard !isRoot else { return 0 }
+        return 24 + 6
+    }
+
+    private var trailingReservedWidth: CGFloat {
+        var width: CGFloat = 26
+
+        if parentIsCalculation {
+            width += 6 + 50
+        }
+
+        if node.type == .calculation {
+            width += 6 + 26
+            if showWeightWarning {
+                width += 6 + 12
+            }
+        }
+
+        return width
     }
 
     @ViewBuilder

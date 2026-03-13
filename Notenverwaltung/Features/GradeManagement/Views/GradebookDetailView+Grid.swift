@@ -314,20 +314,21 @@ extension GradebookDetailView {
         #endif
 
         let parentIsCalculation = nodeHasCalculationParent(nodeID)
-        let settingsControlWidth: CGFloat = 26
-        let weightControlWidth: CGFloat = parentIsCalculation ? 50 : 0
-        let calcControlWidth: CGFloat = node.type == .calculation ? 40 : 0
-        let horizontalInsets: CGFloat = 16
-        let interItemSpacing: CGFloat = 12
+        let leadingControlsWidth: CGFloat = 24 + 6
+        var trailingControlsWidth: CGFloat = 26
 
-        let requiredWidth = measuredTextWidth
-            + settingsControlWidth
-            + weightControlWidth
-            + calcControlWidth
-            + horizontalInsets
-            + interItemSpacing
+        if parentIsCalculation {
+            trailingControlsWidth += 6 + 50
+        }
 
-        return min(max(requiredWidth, minColumnWidth), maxColumnWidth)
+        if node.type == .calculation {
+            trailingControlsWidth += 6 + 26
+        }
+
+        let centeredTitlePadding = max(leadingControlsWidth, trailingControlsWidth) + 8
+        let requiredWidth = measuredTextWidth + centeredTitlePadding * 2
+
+        return max(requiredWidth, minColumnWidth)
     }
 
     private func nodeHasCalculationParent(_ nodeID: UUID) -> Bool {

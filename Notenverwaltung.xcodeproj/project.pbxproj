@@ -10,9 +10,20 @@
 		65C4C8272F62BE8F006D877A /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 65C4C8262F62BE8F006D877A /* README.md */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		F00100062F70000100C55639 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E6E1BCB62F5D78D700C55639 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E6E1BCBD2F5D78D700C55639;
+			remoteInfo = Notenverwaltung;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		65C4C8262F62BE8F006D877A /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		E6E1BCBE2F5D78D700C55639 /* Notenverwaltung.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Notenverwaltung.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F00100012F70000100C55639 /* NotenverwaltungTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NotenverwaltungTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -21,10 +32,22 @@
 			path = Notenverwaltung;
 			sourceTree = "<group>";
 		};
+		F001000B2F70000100C55639 /* NotenverwaltungTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NotenverwaltungTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		E6E1BCBB2F5D78D700C55639 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00100032F70000100C55639 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -38,6 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				E6E1BCC02F5D78D700C55639 /* Notenverwaltung */,
+				F001000B2F70000100C55639 /* NotenverwaltungTests */,
 				E6E1BCBF2F5D78D700C55639 /* Products */,
 				65C4C8262F62BE8F006D877A /* README.md */,
 			);
@@ -47,6 +71,7 @@
 			isa = PBXGroup;
 			children = (
 				E6E1BCBE2F5D78D700C55639 /* Notenverwaltung.app */,
+				F00100012F70000100C55639 /* NotenverwaltungTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -76,6 +101,28 @@
 			productReference = E6E1BCBE2F5D78D700C55639 /* Notenverwaltung.app */;
 			productType = "com.apple.product-type.application";
 		};
+		F00100052F70000100C55639 /* NotenverwaltungTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F001000A2F70000100C55639 /* Build configuration list for PBXNativeTarget "NotenverwaltungTests" */;
+			buildPhases = (
+				F00100042F70000100C55639 /* Sources */,
+				F00100032F70000100C55639 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F00100072F70000100C55639 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				F001000B2F70000100C55639 /* NotenverwaltungTests */,
+			);
+			name = NotenverwaltungTests;
+			packageProductDependencies = (
+			);
+			productName = NotenverwaltungTests;
+			productReference = F00100012F70000100C55639 /* NotenverwaltungTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -88,6 +135,10 @@
 				TargetAttributes = {
 					E6E1BCBD2F5D78D700C55639 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					F00100052F70000100C55639 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = E6E1BCBD2F5D78D700C55639;
 					};
 				};
 			};
@@ -106,6 +157,7 @@
 			projectRoot = "";
 			targets = (
 				E6E1BCBD2F5D78D700C55639 /* Notenverwaltung */,
+				F00100052F70000100C55639 /* NotenverwaltungTests */,
 			);
 		};
 /* End PBXProject section */
@@ -129,7 +181,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F00100042F70000100C55639 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F00100072F70000100C55639 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E6E1BCBD2F5D78D700C55639 /* Notenverwaltung */;
+			targetProxy = F00100062F70000100C55639 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		E6E1BCC92F5D78D800C55639 /* Debug */ = {
@@ -334,6 +401,76 @@
 			};
 			name = Release;
 		};
+		F00100082F70000100C55639 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T5HZV9ZTGD;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				PRODUCT_BUNDLE_IDENTIFIER = StefanVe2.NotenverwaltungTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Notenverwaltung.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Notenverwaltung";
+				TEST_TARGET_NAME = Notenverwaltung;
+				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Debug;
+		};
+		F00100092F70000100C55639 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T5HZV9ZTGD;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				PRODUCT_BUNDLE_IDENTIFIER = StefanVe2.NotenverwaltungTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Notenverwaltung.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Notenverwaltung";
+				TEST_TARGET_NAME = Notenverwaltung;
+				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -351,6 +488,15 @@
 			buildConfigurations = (
 				E6E1BCCC2F5D78D800C55639 /* Debug */,
 				E6E1BCCD2F5D78D800C55639 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F001000A2F70000100C55639 /* Build configuration list for PBXNativeTarget "NotenverwaltungTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F00100082F70000100C55639 /* Debug */,
+				F00100092F70000100C55639 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

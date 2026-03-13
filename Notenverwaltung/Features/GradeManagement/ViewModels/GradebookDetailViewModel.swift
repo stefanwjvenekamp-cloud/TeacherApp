@@ -89,6 +89,11 @@ final class GradebookDetailViewModel {
         refreshRows()
     }
 
+    func mergeSiblingNodesUnderNewParent(nodeIDs: [UUID]) {
+        root = interactor.mergeSiblingNodesUnderNewParent(nodeIDs: nodeIDs, root: root)
+        refreshRows()
+    }
+
     func deleteNode(id: UUID) {
         root = interactor.deleteNode(id: id, root: root)
         refreshRows()
