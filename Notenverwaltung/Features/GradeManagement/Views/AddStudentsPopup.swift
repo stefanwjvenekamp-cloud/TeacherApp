@@ -60,12 +60,18 @@ struct AddStudentsPopup: View {
     @State private var reviewResolutions: [CSVImportResolution] = []
     @State private var commitResult: CSVImportCommitResult?
     @State private var hasCommittedChanges = false
+    @State private var selectionTarget: ResolutionSelectionTarget?
     @State private var errorMessage: String?
 
     private enum Stage {
         case options
         case review
         case summary
+    }
+
+    private struct ResolutionSelectionTarget: Identifiable {
+        let id: UUID
+        let index: Int
     }
 
     var body: some View {
@@ -115,6 +121,9 @@ struct AddStudentsPopup: View {
             allowsMultipleSelection: false
         ) { result in
             handleFileImport(result)
+        }
+        .sheet(item: $selectionTarget) { target in
+            resolutionSelectionSheet(for: target)
         }
     }
 
@@ -332,40 +341,28 @@ struct AddStudentsPopup: View {
             if !resolution.matchResult.candidateMatches.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(resolution.matchResult.candidateMatches.enumerated()), id: \.offset) { _, match in
-                        Text("\(match.student.fullName) · \(match.reason)")
+                        Text("\(match.displayLabel) · \(match.reason)")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
                 }
             }
 
-            Menu {
-                Button("Neu anlegen") {
-                    reviewResolutions[index].resolutionAction = .createNewStudent
-                }
-                Button("Überspringen") {
-                    reviewResolutions[index].resolutionAction = .skip
-                }
-
-                if !resolution.matchResult.candidateMatches.isEmpty {
-                    Divider()
-                    ForEach(Array(resolution.matchResult.candidateMatches.enumerated()), id: \.offset) { _, match in
-                        Button("Vorhandenen Schüler verwenden: \(match.student.fullName)") {
-                            reviewResolutions[index].resolutionAction = .useExistingStudent(studentID: match.student.id)
-                        }
-                    }
-                }
-
-                if resolution.matchResult.matchStatus != .none {
-                    Divider()
-                    Button("Offen lassen") {
-                        reviewResolutions[index].resolutionAction = .unresolved
-                    }
-                }
+            Button {
+                selectionTarget = ResolutionSelectionTarget(
+                    id: resolution.importCandidate.id,
+                    index: index
+                )
             } label: {
-                Label("Entscheidung ändern", systemImage: "slider.horizontal.3")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    Label("Entscheidung ändern", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 13, weight: .medium))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.bordered)
         }
@@ -495,6 +492,123 @@ struct AddStudentsPopup: View {
             Text(value)
                 .font(.system(size: 14, weight: .semibold, design: .monospaced))
         }
+    }
+
+    @ViewBuilder
+    private func resolutionSelectionSheet(for target: ResolutionSelectionTarget) -> some View {
+        let resolution = reviewResolutions[target.index]
+
+        NavigationStack {
+            List {
+                Section("Importzeile") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(resolution.importCandidate.displayName)
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Match: \(matchStatusLabel(for: resolution.matchResult.matchStatus))")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                Section("Aktionen") {
+                    selectionActionRow(
+                        title: "Neu anlegen",
+                        subtitle: "Neuen Student aus dieser CSV-Zeile erzeugen.",
+                        isSelected: reviewResolutions[target.index].resolutionAction == .createNewStudent
+                    ) {
+                        reviewResolutions[target.index].resolutionAction = .createNewStudent
+                        selectionTarget = nil
+                    }
+
+                    selectionActionRow(
+                        title: "Überspringen",
+                        subtitle: "Diese Zeile nicht importieren.",
+                        isSelected: reviewResolutions[target.index].resolutionAction == .skip
+                    ) {
+                        reviewResolutions[target.index].resolutionAction = .skip
+                        selectionTarget = nil
+                    }
+
+                    if resolution.matchResult.matchStatus != .none {
+                        selectionActionRow(
+                            title: "Offen lassen",
+                            subtitle: "Noch keine Entscheidung treffen.",
+                            isSelected: reviewResolutions[target.index].resolutionAction == .unresolved
+                        ) {
+                            reviewResolutions[target.index].resolutionAction = .unresolved
+                            selectionTarget = nil
+                        }
+                    }
+                }
+
+                if !resolution.matchResult.candidateMatches.isEmpty {
+                    Section("Vorhandene Schüler") {
+                        ForEach(Array(resolution.matchResult.candidateMatches.enumerated()), id: \.offset) { _, match in
+                            selectionActionRow(
+                                title: match.student.fullName,
+                                subtitle: match.contextSummary,
+                                trailingText: match.reason,
+                                isSelected: reviewResolutions[target.index].resolutionAction == .useExistingStudent(studentID: match.student.id)
+                            ) {
+                                reviewResolutions[target.index].resolutionAction = .useExistingStudent(studentID: match.student.id)
+                                selectionTarget = nil
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Auswahl")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Fertig") {
+                        selectionTarget = nil
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func selectionActionRow(
+        title: String,
+        subtitle: String,
+        trailingText: String? = nil,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .multilineTextAlignment(.leading)
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    if let trailingText {
+                        Text(trailingText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func dismissPopup() {

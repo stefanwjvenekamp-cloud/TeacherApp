@@ -146,6 +146,140 @@ struct CSVImportServiceTests {
         #expect(results[0].candidateMatches.allSatisfy { $0.matchQuality == .exact })
     }
 
+    @Test func muellerMatchesMuellerViaGermanNormalization() {
+        let csv = """
+        Vorname;Nachname
+        Tim;Mueller
+        """
+
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .germanNormalized)
+    }
+
+    @Test func weissMatchesWeissViaGermanNormalization() {
+        let csv = """
+        Vorname;Nachname
+        Tina;Weiss
+        """
+
+        let student = Student(firstName: "Tina", lastName: "Weiß")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .germanNormalized)
+    }
+
+    @Test func baeckerMatchesBaeckerViaGermanNormalization() {
+        let csv = """
+        Vorname;Nachname
+        Lena;Baecker
+        """
+
+        let student = Student(firstName: "Lena", lastName: "Bäcker")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .germanNormalized)
+    }
+
+    @Test func doesNotMatchDifferentGermanNamesLikeMayerAndMeier() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Mayer
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meier")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .none)
+        #expect(results[0].candidateMatches.isEmpty)
+    }
+
+    @Test func returnsLegacySegmentedMatchForLegacySingleStringImportWithMultiPartFirstName() {
+        let candidate = try! #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nJanne-Mieke Elise;Kandelhard").candidates.first
+        )
+
+        let legacyImportedName = "Janne-Mieke Elise Kandelhard"
+        let splitLegacyStudent = GradebookStudentService.splitName(legacyImportedName)
+        let student = Student(
+            firstName: splitLegacyStudent.0,
+            lastName: splitLegacyStudent.1
+        )
+
+        let results = CSVImportService.matchCandidates([candidate], against: [student])
+        let matchResult = try! #require(results.first)
+
+        #expect(splitLegacyStudent.0 == "Janne-Mieke")
+        #expect(splitLegacyStudent.1 == "Elise Kandelhard")
+        #expect(candidate.originalFirstName == "Janne-Mieke Elise")
+        #expect(candidate.originalLastName == "Kandelhard")
+        #expect(matchResult.matchStatus == .single)
+        #expect(matchResult.candidateMatches.count == 1)
+        #expect(matchResult.candidateMatches[0].matchQuality == .legacySegmented)
+        #expect(matchResult.candidateMatches[0].reason == "legacySegmented")
+    }
+
+    @Test func doesNotReturnLegacySegmentedMatchForUnrelatedCombination() {
+        let candidate = try! #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nJanne-Mieke Elise;Kandelhard").candidates.first
+        )
+
+        let student = Student(
+            firstName: "Janne-Mieke",
+            lastName: "Elise Sommer"
+        )
+
+        let results = CSVImportService.matchCandidates([candidate], against: [student])
+        let matchResult = try! #require(results.first)
+
+        #expect(matchResult.matchStatus == .none)
+        #expect(matchResult.candidateMatches.isEmpty)
+    }
+
+    @MainActor
+    @Test func matchDisplayLabelShowsEnrollmentContextWhenAvailable() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let firstClass = SchoolClass(name: "10B", subject: "Mathe", schoolYear: "2025/2026")
+        let secondClass = SchoolClass(name: "9A", subject: "Deutsch", schoolYear: "2025/2026")
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        context.insert(firstClass)
+        context.insert(secondClass)
+        context.insert(student)
+        _ = GradebookRepository.enrollment(for: student, studentNumber: 14, in: firstClass, context: context)
+        _ = GradebookRepository.enrollment(for: student, studentNumber: nil, in: secondClass, context: context)
+
+        let match = CSVStudentMatch(student: student, matchQuality: .exact, reason: "exact")
+
+        #expect(match.displayLabel.contains("Tim Müller"))
+        #expect(match.contextSummary.contains("10B Nr. 14"))
+        #expect(match.contextSummary.contains("9A"))
+    }
+
+    @Test func matchDisplayLabelUsesFallbackWhenNoContextExists() {
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        let match = CSVStudentMatch(student: student, matchQuality: .exact, reason: "exact")
+
+        #expect(match.displayLabel.contains("Tim Müller"))
+        #expect(match.contextSummary.contains("Ohne Klassenzuordnung"))
+        #expect(match.contextSummary.contains(String(student.id.uuidString.prefix(6))))
+    }
+
     @Test func skipsInvalidImportCandidatesDuringMatching() {
         let csv = """
         Vorname;Nachname
@@ -394,6 +528,90 @@ struct CSVImportCommitTests {
         #expect(result.outcomes[0].status == .rejected)
         #expect(students.count == 1)
         #expect(schoolClass.enrollments.isEmpty)
+    }
+
+    @MainActor
+    @Test func identicalCsvRowsWithCreateNewStudentCreateTwoSeparateStudents() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        context.insert(schoolClass)
+
+        let candidates = CSVImportService.parseCandidates(from: """
+        Vorname;Nachname
+        Tim;Müller
+        Tim;Müller
+        """).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [])
+        let resolutions = CSVImportService.makeInitialResolutions(for: matchResults)
+
+        let result = try CSVImportService.commitResolutions(resolutions, into: schoolClass, context: context)
+
+        let students = try context.fetch(
+            FetchDescriptor<Student>(
+                predicate: #Predicate { $0.firstName == "Tim" && $0.lastName == "Müller" }
+            )
+        )
+        let enrollments = try context.fetch(FetchDescriptor<ClassEnrollment>())
+            .filter { enrollment in
+                enrollment.schoolClass?.id == schoolClass.id &&
+                students.contains(where: { $0.id == enrollment.student?.id })
+            }
+        let rows = try context.fetch(FetchDescriptor<GradebookRowEntity>())
+            .filter { row in
+                enrollments.contains(where: { $0.id == row.classEnrollment?.id })
+            }
+
+        #expect(result.outcomes.count == 2)
+        #expect(result.outcomes.allSatisfy { $0.status == .committed })
+        #expect(result.createdStudents.count == 2)
+        #expect(students.count == 2)
+        #expect(Set(students.map(\.id)).count == 2)
+        #expect(enrollments.count == 2)
+        #expect(Set(enrollments.compactMap(\.student?.id)).count == 2)
+        #expect(rows.count == 2)
+        #expect(Set(rows.compactMap(\.classEnrollment?.id)).count == 2)
+    }
+
+    @MainActor
+    @Test func identicalCsvRowsUsingSameExistingStudentReuseStudentEnrollmentAndRows() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        context.insert(schoolClass)
+        context.insert(student)
+
+        let candidates = CSVImportService.parseCandidates(from: """
+        Vorname;Nachname
+        Tim;Müller
+        Tim;Müller
+        """).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [student])
+        let resolutions = matchResults.map { matchResult in
+            CSVImportResolution(
+                importCandidate: matchResult.importCandidate,
+                matchResult: matchResult,
+                resolutionAction: .useExistingStudent(studentID: student.id)
+            )
+        }
+
+        let result = try CSVImportService.commitResolutions(resolutions, into: schoolClass, context: context)
+
+        let students = try context.fetch(FetchDescriptor<Student>())
+        let enrollments = try context.fetch(FetchDescriptor<ClassEnrollment>())
+            .filter { $0.schoolClass?.id == schoolClass.id && $0.student?.id == student.id }
+        let rows = try context.fetch(FetchDescriptor<GradebookRowEntity>())
+            .filter { $0.classEnrollment?.student?.id == student.id && $0.classEnrollment?.schoolClass?.id == schoolClass.id }
+
+        #expect(result.outcomes.count == 2)
+        #expect(result.outcomes.allSatisfy { $0.status == .committed })
+        #expect(result.createdStudents.isEmpty)
+        #expect(result.reusedStudents.count == 2)
+        #expect(students.count == 1)
+        #expect(enrollments.count == 1)
+        #expect(rows.count == 1)
+        #expect(result.outcomes.allSatisfy { $0.createdEnrollment == false || $0.createdRows <= 1 })
     }
 }
 

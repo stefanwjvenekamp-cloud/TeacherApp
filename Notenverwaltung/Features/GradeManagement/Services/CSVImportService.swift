@@ -92,6 +92,29 @@ struct CSVStudentMatch {
     let student: Student
     let matchQuality: CSVImportMatchQuality
     let reason: String
+
+    var contextSummary: String {
+        let enrollmentSummaries = student.classEnrollments
+            .compactMap { enrollment -> String? in
+                guard let schoolClass = enrollment.schoolClass else { return nil }
+                if let studentNumber = enrollment.studentNumber {
+                    return "\(schoolClass.name) Nr. \(studentNumber)"
+                }
+                return schoolClass.name
+            }
+            .sorted()
+
+        if !enrollmentSummaries.isEmpty {
+            return "Klassen: \(enrollmentSummaries.joined(separator: ", "))"
+        }
+
+        let shortID = String(student.id.uuidString.prefix(6))
+        return "Ohne Klassenzuordnung · ID \(shortID)"
+    }
+
+    var displayLabel: String {
+        "\(student.fullName) — \(contextSummary)"
+    }
 }
 
 enum CSVImportMatchStatus {
@@ -102,8 +125,10 @@ enum CSVImportMatchStatus {
 
 enum CSVImportMatchQuality: Int, Comparable {
     case none = 0
-    case normalized = 1
-    case exact = 2
+    case germanNormalized = 1
+    case legacySegmented = 2
+    case normalized = 3
+    case exact = 4
 
     static func < (lhs: CSVImportMatchQuality, rhs: CSVImportMatchQuality) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -560,6 +585,14 @@ enum CSVImportService {
         )
     }
 
+    private static func germanNormalize(_ value: String) -> String {
+        normalizeName(value)
+            .replacingOccurrences(of: "ä", with: "ae")
+            .replacingOccurrences(of: "ö", with: "oe")
+            .replacingOccurrences(of: "ü", with: "ue")
+            .replacingOccurrences(of: "ß", with: "ss")
+    }
+
     private static func normalizeWhitespace(_ value: String) -> String {
         value.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
@@ -642,6 +675,47 @@ enum CSVImportService {
             )
         }
 
+        if matchesLegacySegmented(candidate: candidate, student: student) {
+            return CSVStudentMatch(
+                student: student,
+                matchQuality: .legacySegmented,
+                reason: "legacySegmented"
+            )
+        }
+
+        if germanNormalize(student.firstName) == germanNormalize(candidate.originalFirstName),
+           germanNormalize(student.lastName) == germanNormalize(candidate.originalLastName) {
+            return CSVStudentMatch(
+                student: student,
+                matchQuality: .germanNormalized,
+                reason: "germanNormalized"
+            )
+        }
+
         return nil
+    }
+
+    private static func matchesLegacySegmented(candidate: CSVImportCandidate, student: Student) -> Bool {
+        let candidateFirstNameParts = candidate.originalFirstName
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+
+        guard candidateFirstNameParts.count >= 2 else { return false }
+
+        let legacyStudentFirstName = candidateFirstNameParts.first ?? ""
+        let legacyStudentLastName = (candidateFirstNameParts.dropFirst() + [candidate.originalLastName])
+            .joined(separator: " ")
+
+        if student.firstName == legacyStudentFirstName,
+           student.lastName == legacyStudentLastName {
+            return true
+        }
+
+        let normalizedLegacyFirstName = normalizeName(legacyStudentFirstName)
+        let normalizedLegacyLastName = normalizeName(legacyStudentLastName)
+
+        return normalizeName(student.firstName) == normalizedLegacyFirstName &&
+            normalizeName(student.lastName) == normalizedLegacyLastName
     }
 }
