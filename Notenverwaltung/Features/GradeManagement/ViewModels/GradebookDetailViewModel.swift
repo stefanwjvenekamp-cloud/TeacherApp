@@ -35,6 +35,9 @@ final class GradebookDetailViewModel {
 
     var columnWidths: [UUID: CGFloat] = [:]
     var horizontalScrollOffset: CGFloat = 0
+    #if os(iOS)
+    let scrollSyncCoordinator = ScrollSyncCoordinator()
+    #endif
     var zoomScale: CGFloat = 1.0
     var baseZoomScale: CGFloat = 1.0
     var movingNodeID: UUID? = nil
