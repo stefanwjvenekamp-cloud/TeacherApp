@@ -33,13 +33,13 @@ struct GradebookDetailInteractor {
         let rowEntities = GradebookRepository.rows(for: tab)
         GradebookRepository.ensureCellValues(
             for: tab,
-            rowIDs: rowEntities.map(\.id),
+            rowIDs: rowEntities.compactMap(\.resolvedStudentID),
             nodeIDs: inputIDs,
             context: context
         )
 
         return rowEntities.compactMap { rowEntity in
-            guard let student = rowEntity.student else { return nil }
+            guard let student = rowEntity.resolvedStudent else { return nil }
             var values = GradebookRepository.cellValues(for: rowEntity)
             values = values.filter { inputIDs.contains($0.key) }
             for inputID in inputIDs where values[inputID] == nil {

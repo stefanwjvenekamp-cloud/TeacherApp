@@ -96,7 +96,11 @@ final class GradebookRowEntity {
     var sortOrder: Int
 
     var tab: GradebookTabEntity?
-    var student: Student?
+    // SwiftData stores this as optional, but all supported creation paths require a valid enrollment.
+    var classEnrollment: ClassEnrollment?
+    // Grade entries are contextual to a concrete row and should be removed with that row.
+    @Relationship(deleteRule: .cascade, inverse: \GradeEntry.gradebookRow)
+    var gradeEntries: [GradeEntry]
     @Relationship(deleteRule: .cascade, inverse: \GradebookCellValueEntity.row)
     var cellValues: [GradebookCellValueEntity]
 
@@ -104,13 +108,26 @@ final class GradebookRowEntity {
         id: UUID = UUID(),
         sortOrder: Int,
         tab: GradebookTabEntity? = nil,
-        student: Student? = nil
+        classEnrollment: ClassEnrollment
     ) {
         self.id = id
         self.sortOrder = sortOrder
         self.tab = tab
-        self.student = student
+        self.classEnrollment = classEnrollment
+        self.gradeEntries = []
         self.cellValues = []
+    }
+
+    var resolvedStudent: Student? {
+        classEnrollment?.student
+    }
+
+    var resolvedStudentID: UUID? {
+        resolvedStudent?.id
+    }
+
+    var resolvedStudentNumber: Int {
+        classEnrollment?.studentNumber ?? 0
     }
 }
 

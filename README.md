@@ -1,175 +1,192 @@
-# Notenverwaltung (TeacherApp)
+# Notenverwaltung
 
-## Überblick
+Eine modulare Lehrer-App in SwiftUI und SwiftData. Der aktuell am weitesten ausgebaute Bereich ist die Notenverwaltung mit klassenbezogenen Notentabellen, verschachteltem Gewichtungsbaum und einem mehrstufigen CSV-Import für Schülerdaten.
 
-Eine modulare iPad-App für Lehrkräfte. Der aktuell ausgebaute Bereich ist die **Notenverwaltung** — eine frei konfigurierbare Notentabelle mit verschachteltem Gewichtungsbaum. Weitere Module (Kalender, Planung, Dokumentation, Gruppeneinteilung, Umfragen) sind als Platzhalter vorbereitet.
+## Projektziel
 
-## Was aktuell funktioniert
+Die App soll Lehrkräften eine zentrale Arbeitsoberfläche für mehrere schulische Aufgaben bieten. Die langfristige Idee ist eine modulare Teacher-Suite, in der dieselbe Schüleridentität in mehreren Bereichen wiederverwendet werden kann, statt pro Modul neu dupliziert zu werden.
 
-- Dashboard mit Modulkacheln und Navigation
-- Klassenübersicht mit Schüleranzahl
-- Notentabelle mit frei konfigurierbaren Spalten und verschachteltem Gewichtungsbaum
-- Mehrere Tabs pro Klasse (z.B. Schuljahre)
-- Schüler hinzufügen, löschen, umbenennen (einzeln oder per CSV-Import)
-- Knoten hinzufügen, löschen, verschieben, umbenennen, Gewichte verteilen
-- Automatische Durchschnittsberechnung mit gewichtetem Notenbaum
-- Zoom und horizontales Scrollen der Tabelle
-- Persistenz über SwiftData — alle Daten werden lokal auf dem Gerät gespeichert
+Aktuell liegt der Schwerpunkt auf:
 
-## Architektur
+- Notenverwaltung
+- Klassenkontext und Schülerzuordnungen
+- sauberer CSV-Import mit Review vor dem Speichern
+- lokaler Persistenz über SwiftData
 
-### Die drei Schichten
+Weitere Module wie Kalender, Planung, Dokumentation, Gruppeneinteilung und Umfragen sind bereits als Einstiegspunkte bzw. Platzhalter vorhanden.
 
-```
-┌─────────────────────────────────────┐
-│  Views (SwiftUI)                    │  Was der Nutzer sieht
-│  GradeBookMainView                  │
-│  ClassGradebooksDetailView          │
-│  GradebookDetailView + Popups       │
-├─────────────────────────────────────┤
-│  ViewModel + Interactor + Services  │  Logik und Zustandsverwaltung
-│  GradebookDetailViewModel           │
-│  GradebookDetailInteractor          │
-│  GradebookNodeService               │
-│  GradebookStudentService            │
-│  GradebookRepository                │
-├─────────────────────────────────────┤
-│  SwiftData Entities                 │  Was in der Datenbank gespeichert wird
-│  SchoolClass, Student               │
-│  GradebookTabEntity                 │
-│  GradebookNodeEntity                │
-│  GradebookRowEntity                 │
-│  GradebookCellValueEntity           │
-└─────────────────────────────────────┘
-```
+## Aktueller IST-Stand
 
-### Datenmodell
+### Bereits umgesetzt
 
-```
-SchoolClass (z.B. "10b - Deutsch")
-├── students: [Student]
-└── gradebookTabs: [GradebookTabEntity]  (z.B. "2025/2026")
-                    ├── nodes: [GradebookNodeEntity]  ← der Notenbaum
-                    └── rows: [GradebookRowEntity]    ← Schüler-Tab-Verknüpfung
-                               └── cellValues: [GradebookCellValueEntity]  ← einzelne Noten
+- modulare App-Struktur mit Dashboard und Modulnavigation
+- SwiftData-basierte Persistenz
+- zentrale Schüleridentität über `Student`
+- Trennung zwischen Person und Klassenzugehörigkeit über `ClassEnrollment`
+- klassenbezogene Notentabellen über `GradebookTabEntity`, `GradebookRowEntity` und `GradebookCellValueEntity`
+- gewichteter, verschachtelter Notenbaum mit frei bearbeitbaren Knoten
+- mehrere Tabs pro Klasse
+- Schüler hinzufügen, löschen und umbenennen
+- CSV-Import mit Review-Schritt vor dem Commit
+- Matching vorhandener Schüler mit mehreren Match-Stufen
+- Unit-Tests für Gradebook-Logik, Enrollment-Integrität und Import-Pipeline
+
+### CSV-Import aktuell
+
+Der Import läuft inzwischen fachlich in klar getrennten Schritten:
+
+```text
+CSV
+→ CSVImportCandidate
+→ CSVImportMatchResult
+→ CSVImportResolution
+→ Commit
 ```
 
-### Der Notenbaum
+Bereits vorhanden:
 
-Das Herzstück der App ist ein verschachtelter Gewichtungsbaum. Jeder Knoten ist entweder ein **Berechnungsknoten** (fasst Kinder zusammen) oder ein **Eingabeknoten** (hier wird eine Note eingetragen):
+- Header-Mapping für Vorname/Nachname
+- Validierung pro Zeile
+- Matching gegen vorhandene `Student`-Objekte
+- Match-Typen:
+  - `exact`
+  - `normalized`
+  - `legacySegmented`
+  - `germanNormalized`
+- Review-UI für die fachliche Entscheidung pro Zeile
+- Commit-Schicht für vollständig aufgelöste Resolutionen
 
-```
-Schuljahr (100%)
-├── Schulhalbjahr 1 (50%)           ← Berechnung
-│   ├── Schriftliche Leistungen (50%)   ← Berechnung
-│   │   ├── Klassenarbeit 1 (50%)       ← Eingabe
-│   │   └── Klassenarbeit 2 (50%)       ← Eingabe
-│   └── Mündliche Leistungen (50%)      ← Berechnung
-│       └── Mündliche Mitarbeit (100%)  ← Eingabe
-└── Schulhalbjahr 2 (50%)
-    └── ...
-```
+Wichtig:
 
-Dieser Baum existiert in zwei Formen:
-- **Im Speicher** als `GradeTileNode` (verschachtelter Struct-Baum) — schnell zu bearbeiten
-- **In der Datenbank** als `GradebookNodeEntity` (flache Tabelle mit parent/child-Verknüpfungen) — persistent
+- Namen sind nie Identität.
+- CSV-Import merged nicht blind.
+- Die endgültige Identitätsentscheidung liegt beim Nutzer.
 
-Der `GradebookTreeService` übersetzt zwischen beiden Formen.
+## Fachliche Kernarchitektur
 
-### Datenfluss
+Die zentrale Struktur der App ist aktuell:
 
-**Noteneingabe:**
-```
-Lehrer tippt "2,3" → GradeInputPopup → ViewModel.setInputValue()
-  → aktualisiert lokalen Zustand (rows)
-  → GradebookDetailInteractor.setInputValue()
-  → GradebookRepository.upsertCellValue() → Datenbank
-```
-
-**App-Start:**
-```
-NotenverwaltungApp → PersistenceController (ModelContainer öffnen)
-  → MigrationGateView → alte Formate migrieren
-  → GradeBookMainView → Klassen laden, Default-Tabs sicherstellen
-  → Nutzer wählt Klasse → ClassGradebooksDetailView
-  → Nutzer sieht Tab → GradebookDetailView
-    → ViewModel delegiert fachliche Lese-/Schreiboperationen an den Interactor
+```text
+Student
+   │
+ClassEnrollment
+   │
+SchoolClass
+   │
+GradebookRowEntity
+   │
+GradeEntry
 ```
 
-## Projektstruktur
+### Bedeutung der Entitäten
 
-### App-Einstieg
-| Datei | Beschreibung |
-|-------|-------------|
-| `NotenverwaltungApp.swift` | App-Entry-Point, Composition Root |
-| `App/Persistence/PersistenceController.swift` | Kapselt Schema, ModelContainer und Store-Reset-Fallback |
-| `App/Migration/MigrationGateView.swift` | Führt Migrationen vor dem Anzeigen der Hauptoberfläche aus |
-| `ContentView.swift` | TabBar (Übersicht, Noten, Briefe, Kalender, Planung) + Dashboard |
+- `Student`
+  Zentrale fachliche Personentität mit stabiler UUID.
 
-### Datenmodelle
-| Datei | Beschreibung |
-|-------|-------------|
-| `Core/Domain/CoreEducationModels.swift` | Stammdaten: SchoolClass, Student, Teacher, Subject, Course |
-| `Features/.../Models/GradebookEntities.swift` | Notentabellen-Entities: Tab, Node, Row, CellValue |
-| `Features/.../Models/GradeAssessmentModels.swift` | Assessment, GradeEntry, GradeComment |
-| `Features/.../Models/GradeBookModels.swift` | In-Memory-Modelle: GradeTileNode, GradeTileTree, Enums |
-| `Features/.../Models/GradebookViewHelpers.swift` | UI-Hilfstypen: InsertionSlot, GradeInputCellTarget etc. |
+- `ClassEnrollment`
+  Zugehörigkeit eines Students zu genau einer Klasse. Hier liegen kontextabhängige Informationen wie z. B. `studentNumber`.
 
-### ViewModel
-| Datei | Beschreibung |
-|-------|-------------|
-| `Features/.../ViewModels/GradebookDetailViewModel.swift` | Zentrales ViewModel für die Notentabelle — hält UI-State und delegiert fachliche Operationen |
+- `SchoolClass`
+  Organisatorischer Klassenkontext.
 
-### Interactor
-| Datei | Beschreibung |
-|-------|-------------|
-| `Features/.../Services/GradebookDetailInteractor.swift` | Bündelt fachliche Gradebook-Mutationen und Zugriffe auf Repository/Services |
+- `GradebookRowEntity`
+  Tabellenzeile innerhalb eines Gradebook-Tabs. Sie gehört fachlich zu einem Enrollment, nicht direkt zur Person.
 
-### Views
-| Datei | Beschreibung |
-|-------|-------------|
-| `Features/.../Views/GradeBookMainView.swift` | Einstieg in die Notenverwaltung mit Klassenübersicht |
-| `Features/.../Views/ClassGradebooksDetailView.swift` | Detailansicht einer Klasse mit Reiterverwaltung |
-| `Features/.../Views/GradebookDetailView.swift` | Kern-View der Notentabelle |
-| `Features/.../Views/GradebookDetailView+Layout.swift` | Zoom, Scroll und Tabellenlayout |
-| `Features/.../Views/GradebookDetailView+Interactions.swift` | Dialoge, Overlays und Interaktionsflüsse |
-| `Features/.../Views/GradebookDetailView+Grid.swift` | Grid-, Zell- und Darstellungslogik |
-| `Features/.../Views/HeaderTileView.swift` | Einzelne Kachel im Tabellenkopf |
-| `Features/.../Views/FloatingTileSettingsPanel.swift` | Bearbeitungs-Popup für Knoten |
-| `Features/.../Views/GradeInputPopup.swift` | Noteneingabe-Popup |
-| `Features/.../Views/AddStudentsPopup.swift` | Schüler hinzufügen (einzeln + CSV) |
-| `Features/.../Views/ClassCard.swift` | Klassenkarte in der Übersicht |
-| `Features/.../Views/GradebookTableComponents.swift` | Scroll-Synchronisierung |
+- `GradeEntry`
+  Noten-/Bewertungsbezug mit Row-Kontext.
 
-### Services
-| Datei | Beschreibung |
-|-------|-------------|
-| `Features/.../Services/GradebookRepository.swift` | Hauptzugang zur Datenbank — CRUD für Tabs, Rows, Nodes, CellValues |
-| `Features/.../Services/GradebookTreeService.swift` | Übersetzung zwischen GradeTileNode (Speicher) und NodeEntity (DB) |
-| `Features/.../Services/GradebookNodeService.swift` | Baumoperationen: Knoten hinzufügen, löschen, verschieben, Gewichte |
-| `Features/.../Services/GradebookStudentService.swift` | Schülerverwaltung: hinzufügen, löschen, umbenennen |
-| `Features/.../Services/CSVImportService.swift` | CSV-Parsing für Schüler-Import |
-| `Features/.../Services/MockSeedDataService.swift` | Demo-Daten beim ersten Start |
+Diese Trennung ist die Grundlage dafür, dass dieselbe Person später in mehreren Modulen und mehreren Klassen/Kursen sauber referenzierbar bleibt.
 
-### Migration
-| Datei | Beschreibung |
-|-------|-------------|
-| `Features/.../Migration/GradebookMigrationService.swift` | Migriert alte Snapshot-Daten in Entities |
-| `Features/.../Migration/LegacyGradebookMigration.swift` | Migriert uraltes JSON-Format |
-| `Features/.../Migration/GradebookSnapshotStore.swift` | Liest alte Snapshot-Daten (nur noch für Migration) |
+## Technischer Aufbau
 
-### Sonstiges
-| Datei | Beschreibung |
-|-------|-------------|
-| `DesignSystem.swift` | Farben, Abstände, Schriftgrößen, plattformübergreifende Helfer |
-| `FeatureViews.swift` | Platzhalter-Views für zukünftige Module |
-| `App/Navigation/TeacherSuiteModules.swift` | Modul-Definitionen für das Dashboard |
+### UI / App
 
-## Migration
+- `NotenverwaltungApp.swift`
+- `ContentView.swift`
+- `App/Navigation/TeacherSuiteModules.swift`
 
-Beim App-Start werden zwei Migrationspfade geprüft:
+### Persistenz / Bootstrap
 
-1. **Legacy-JSON** (`gradebook_data.json`): Uraltes Format aus der ersten App-Version. Wird in SwiftData-Entities konvertiert und die Datei gelöscht.
-2. **Snapshot-Migration** (`GradebookSnapshot`): Älteres SwiftData-Format, bei dem der Tabellenzustand als JSON-Blob gespeichert wurde. Wird in einzelne Entities (Tab, Node, Row, CellValue) aufgelöst.
+- `App/Persistence/PersistenceController.swift`
+- `App/Migration/MigrationGateView.swift`
 
-Falls der SwiftData-Store nicht geöffnet werden kann, versucht die App aktuell als letzten Notfall, die Store-Dateien zurückzusetzen und den Container neu zu erstellen. Das ist ein pragmatischer Fallback, aber noch keine produktionsreife, versionierte Migrationsstrategie.
+### Domäne
+
+- `Core/Domain/CoreEducationModels.swift`
+- `Features/GradeManagement/Models/GradeAssessmentModels.swift`
+- `Features/GradeManagement/Models/GradebookEntities.swift`
+- `Features/GradeManagement/Models/GradeBookModels.swift`
+
+### Gradebook-Logik
+
+- `Features/GradeManagement/ViewModels/GradebookDetailViewModel.swift`
+- `Features/GradeManagement/Services/GradebookDetailInteractor.swift`
+- `Features/GradeManagement/Services/GradebookRepository.swift`
+- `Features/GradeManagement/Services/GradebookNodeService.swift`
+- `Features/GradeManagement/Services/GradebookStudentService.swift`
+- `Features/GradeManagement/Services/GradebookTreeService.swift`
+
+### Import
+
+- `Features/GradeManagement/Services/CSVImportService.swift`
+- `Features/GradeManagement/Views/AddStudentsPopup.swift`
+
+### Tests
+
+- `NotenverwaltungTests/GradebookLogicTests.swift`
+
+## Was professionell bereits gut gelöst ist
+
+- saubere Trennung von Schüleridentität und Klassenkontext
+- explizite Review-Logik im CSV-Import statt stiller Auto-Merges
+- Wiederverwendung von Enrollments statt doppelter Kontextobjekte
+- mehrstufige Matching-Engine mit transparenten Match-Qualitäten
+- konsequente Tests für Logikpfade statt nur UI-Verhalten
+
+## Was als Nächstes noch passieren sollte
+
+### Kurzfristig
+
+- Import-Review-UX weiter verfeinern
+- bessere Rückmeldungen für Konflikte und mehrdeutige Matches
+- CSV-Import robuster gegen reale Schuldateien machen
+- technische Altpfade und Migrationsreste weiter aufräumen
+
+### Mittelfristig
+
+- Kurs-/Gruppenlogik fachlich auf dieselbe Identitätsarchitektur heben
+- weitere Module an die zentrale Schüleridentität anbinden
+- Tests stärker auf mehrere Dateien und Fachbereiche aufteilen
+- Persistenzstrategie produktionsnäher machen, insbesondere beim Store-Reset-Fallback
+
+### Langfristig
+
+- modulübergreifende Schülerakte
+- gemeinsame Stammdaten für Klassen, Kurse, Leistungsnachweise und Dokumentation
+- produktionsreife Import- und Konfliktbearbeitung
+- stabilere Versionierung/Migration des Datenmodells
+
+## Offene Punkte / bewusste Grenzen des aktuellen Standes
+
+- einige ältere Migrations- und Übergangspfade existieren noch
+- der Store-Reset-Fallback ist für Entwicklung hilfreich, aber noch nicht produktionsreif
+- der Fokus liegt aktuell klar auf der Notenverwaltung; andere Module sind noch nicht fachlich ausgebaut
+- der CSV-Import ist funktional stark verbessert, aber noch kein vollständiger Import-Assistent für alle Schulrealitäten
+
+## Entwicklung und Tests
+
+Die App basiert auf:
+
+- SwiftUI
+- SwiftData
+- Testing / XCTest-nahe Teststruktur im Projekt
+
+Die Logiktests liegen aktuell gebündelt in:
+
+- `NotenverwaltungTests/GradebookLogicTests.swift`
+
+Zuletzt ist die Suite auf dem aktuellen Stand grün gelaufen.
+
+## Kurzfazit
+
+Die App ist nicht mehr nur ein UI-Prototyp, sondern entwickelt sich zu einer fachlich sauberen Lehrer-Engine mit klarer Identitäts- und Importarchitektur. Der Schwerpunkt liegt derzeit auf einer belastbaren Notenverwaltung als Kernmodul. Der nächste große Schritt ist, dieselbe Qualität schrittweise auf weitere Module und die restliche Datenmodellierung zu übertragen.

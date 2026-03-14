@@ -16,16 +16,17 @@ enum GradebookStudentService {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        let nextNumber = (schoolClass.students.map(\.studentNumber).max() ?? 0) + 1
+        let nextNumber = (schoolClass.enrollments.compactMap(\.studentNumber).max() ?? 0) + 1
         let (firstName, lastName) = splitName(trimmed)
-        let student = Student(
-            firstName: firstName,
-            lastName: lastName,
+        let student = Student(firstName: firstName, lastName: lastName)
+        context.insert(student)
+        let enrollment = GradebookRepository.enrollment(
+            for: student,
             studentNumber: nextNumber,
-            classId: schoolClass.id
+            in: schoolClass,
+            context: context
         )
-        schoolClass.students.append(student)
-        GradebookRepository.appendRows(for: student, in: schoolClass, context: context)
+        GradebookRepository.appendRows(for: enrollment, in: schoolClass, context: context)
         GradebookRepository.ensureCellValues(
             for: tab,
             rowIDs: [student.id],
@@ -44,7 +45,7 @@ enum GradebookStudentService {
         inputNodeIDs: Set<UUID>,
         context: ModelContext
     ) -> [Student] {
-        var nextNumber = (schoolClass.students.map(\.studentNumber).max() ?? 0) + 1
+        var nextNumber = (schoolClass.enrollments.compactMap(\.studentNumber).max() ?? 0) + 1
         var created: [Student] = []
 
         for name in names {
@@ -52,15 +53,17 @@ enum GradebookStudentService {
             guard !trimmed.isEmpty else { continue }
 
             let (firstName, lastName) = splitName(trimmed)
-            let student = Student(
-                firstName: firstName,
-                lastName: lastName,
-                studentNumber: nextNumber,
-                classId: schoolClass.id
-            )
+            let student = Student(firstName: firstName, lastName: lastName)
+            context.insert(student)
+            let assignedNumber = nextNumber
             nextNumber += 1
-            schoolClass.students.append(student)
-            GradebookRepository.appendRows(for: student, in: schoolClass, context: context)
+            let enrollment = GradebookRepository.enrollment(
+                for: student,
+                studentNumber: assignedNumber,
+                in: schoolClass,
+                context: context
+            )
+            GradebookRepository.appendRows(for: enrollment, in: schoolClass, context: context)
             GradebookRepository.ensureCellValues(
                 for: tab,
                 rowIDs: [student.id],
@@ -81,13 +84,18 @@ enum GradebookStudentService {
     ) {
         GradebookRepository.deleteRows(for: id, in: schoolClass, context: context)
 
-        if let index = schoolClass.students.firstIndex(where: { $0.id == id }) {
-            let student = schoolClass.students[index]
-            schoolClass.students.remove(at: index)
-            context.delete(student)
-        } else {
-            let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == id })
-            if let student = (try? context.fetch(descriptor))?.first {
+        let descriptor = FetchDescriptor<Student>(predicate: #Predicate { $0.id == id })
+        if let student = (try? context.fetch(descriptor))?.first {
+            let enrollmentsToDelete = student.classEnrollments.filter { $0.schoolClass?.id == schoolClass.id }
+            let hasOtherEnrollments = student.classEnrollments.contains { enrollment in
+                enrollment.schoolClass?.id != schoolClass.id
+            }
+
+            for enrollment in enrollmentsToDelete {
+                context.delete(enrollment)
+            }
+
+            if !hasOtherEnrollments {
                 context.delete(student)
             }
         }

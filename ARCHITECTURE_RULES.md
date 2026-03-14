@@ -18,7 +18,7 @@ PROJECT OVERVIEW
 
 Notenverwaltung is a SwiftUI-based teacher application with a feature-oriented structure.
 
-Current major modules in the repository include:
+Current modules in the repository include:
 
 - Grade Management / Gradebook
 - Calendar
@@ -27,17 +27,15 @@ Current major modules in the repository include:
 - Planner
 - Surveys
 
-The most complex subsystem is the Gradebook feature.
-
-The gradebook behaves like a structured mathematical table with a tree-based
-hierarchy of areas, sub-areas and grade columns.
+The most mature subsystem is the Grade Management feature.
 
 The architecture must preserve:
 
-- tree integrity
-- predictable rendering
-- stable persistence behavior
-- safe future evolution
+- stable student identity
+- clear separation between person and participation context
+- predictable gradebook behavior
+- explicit import review instead of blind data merges
+- safe future evolution across modules
 
 
 ------------------------------------------------------------
@@ -54,10 +52,13 @@ Persistence
 SwiftData
 
 Architecture style
-Feature-oriented architecture with SwiftUI Views, ViewModels, Services and Persistence
+Feature-oriented architecture with SwiftUI Views, ViewModels, Services, Interactors and SwiftData-backed domain entities
 
 Data structure core
-Tree-based grade calculation model
+
+- central educational domain models
+- enrollment-based identity/context separation
+- tree-based grade calculation model
 
 
 ------------------------------------------------------------
@@ -85,7 +86,7 @@ Notes:
 APP LAYER
 ------------------------------------------------------------
 
-The App layer contains only application bootstrap logic.
+The App layer contains only bootstrap logic.
 
 Responsibilities:
 
@@ -93,7 +94,7 @@ Responsibilities:
 - ModelContainer configuration
 - root view initialization
 - environment setup
-- migration entry flow
+- migration / startup flow orchestration
 
 Examples in current project:
 
@@ -104,35 +105,78 @@ Examples in current project:
 The App layer must NOT contain:
 
 - grade calculation logic
-- tree mutation logic
+- CSV matching logic
 - feature-specific rendering logic
+- gradebook mutation workflows
 
 
 ------------------------------------------------------------
 CORE LAYER
 ------------------------------------------------------------
 
-Core contains fundamental educational domain concepts used across the app.
+Core contains educational domain concepts that are relevant beyond one single view.
 
-Examples:
+Important current concepts include:
 
 - Teacher
 - Subject
 - SchoolYear
+- Term
 - SchoolClass
+- Course
 - Student
+- ClassEnrollment
 
 Rules:
 
 - Core models represent domain concepts.
 - They must remain UI-independent.
 - They must not contain rendering logic.
+- Domain identity must not be modeled through display strings.
 
-Important note:
+Important current identity rule:
 
-- In the current project, some core/domain models are SwiftData-backed.
-- This is acceptable for the current architecture.
-- Business logic must still remain outside rendering code and outside persistence glue code.
+- `Student` is the central person identity.
+- `SchoolClass` is an organizational context.
+- `ClassEnrollment` models the participation of one `Student` in one `SchoolClass`.
+- Group membership must not be modeled directly on `Student` through duplicated person objects.
+
+Explicitly forbidden:
+
+- using names as identity keys
+- treating name equality as identity equality
+- duplicating persons only because they appear in multiple class contexts
+
+
+------------------------------------------------------------
+IDENTITY AND MEMBERSHIP MODEL
+------------------------------------------------------------
+
+The central domain structure is:
+
+Student
+   │
+ClassEnrollment
+   │
+SchoolClass
+   │
+GradebookRowEntity
+   │
+GradeEntry
+
+Rules:
+
+- `Student` owns the stable person identity.
+- `ClassEnrollment` owns the participation context.
+- `GradebookRowEntity` belongs to an enrollment, not directly to a person.
+- `GradeEntry` belongs to a gradebook row and therefore inherits the correct class context through that row.
+
+Consequences:
+
+- the same `Student` may appear in multiple classes through multiple enrollments
+- the same `Student` may later be reused across modules
+- UI may still work with `studentID` as a derived identifier
+- persistence and domain workflows must resolve class context through enrollment, not through the raw name
 
 
 ------------------------------------------------------------
@@ -172,37 +216,38 @@ GRADE MANAGEMENT FEATURE
 
 `Features/GradeManagement` is the most complex and most important feature.
 
-Current internal structure includes:
-
-- Models
-- Views
-- ViewModels
-- Services
-- Migration
-
-This feature owns:
+This feature currently owns:
 
 - gradebook tree models
 - gradebook rendering
 - gradebook mutations
+- student-to-class workflows
+- CSV import review and matching pipeline
 - gradebook persistence orchestration
-- gradebook migration helpers
 
 
 ------------------------------------------------------------
 GRADEBOOK ARCHITECTURE
 ------------------------------------------------------------
 
-The gradebook system is implemented as a strict tree structure.
+The gradebook system combines two different but connected structures:
 
-Every gradebook element is represented by a node.
+1. a strict tree of grade columns / aggregations
+2. a row-based projection of students-in-context
 
-Examples of nodes:
+The tree defines:
 
-- grade areas
-- sub-areas
-- calculated aggregate nodes
-- input / grade columns
+- hierarchy
+- weights
+- calculations
+- header projection
+
+The row system defines:
+
+- which enrolled student appears in a given class tab
+- where cell values and grade entries belong
+
+These structures must not be collapsed into one another.
 
 
 ------------------------------------------------------------
@@ -225,18 +270,30 @@ COLUMN SEMANTICS
 
 Each visible node corresponds to exactly one data column in the grid.
 
-Examples:
-
-- area
-- sub-area
-- grade column
-
 Important rule:
 
 - every visible node owns exactly its own visual data column
 - parent nodes do NOT own the data columns of their descendants
 
 The grid is a visual projection of the tree structure.
+
+
+------------------------------------------------------------
+ROW AND TAB SEMANTICS
+------------------------------------------------------------
+
+Rows are not pure UI artifacts.
+
+Rules:
+
+- a `GradebookRowEntity` belongs to exactly one enrollment context
+- rows are created per class / tab context
+- row visibility in the table must come from `GradebookRowEntity -> ClassEnrollment -> Student`
+- a row must never be treated as a free-floating student record
+
+Important consequence:
+
+- a visible student in a gradebook table is a student-in-context, not just a bare person object
 
 
 ------------------------------------------------------------
@@ -251,28 +308,12 @@ A parent node calculates its value ONLY from its direct children.
 
 It must NOT calculate directly from deeper descendants.
 
-Example:
-
-SchoolYear
- ├ Semester1
- └ Semester2
-
-SchoolYear calculates from:
-
-- Semester1
-- Semester2
-
 
 ------------------------------------------------------------
 WEIGHTING
 ------------------------------------------------------------
 
 Children of a parent node may have weights.
-
-Default behavior:
-
-When a new parent node is created,
-its children receive equal weights unless explicitly changed.
 
 Rules:
 
@@ -282,25 +323,91 @@ Rules:
 
 
 ------------------------------------------------------------
-STRUCTURE TRANSFORMATIONS
+CSV IMPORT ARCHITECTURE
 ------------------------------------------------------------
 
-Structural operations must preserve tree invariants and user data.
+CSV import is implemented as an explicit staged pipeline.
 
-Examples:
+Current pipeline:
 
-- inserting nodes
-- deleting nodes
-- moving nodes
-- adding sibling areas
-- restructuring subtrees
+CSV
+→ `CSVImportCandidate`
+→ `CSVImportMatchResult`
+→ `CSVImportResolution`
+→ commit
 
 Rules:
 
-- subtrees must remain intact
-- node IDs must remain stable
-- student data must not be lost unintentionally
-- operations must go through feature services / interactors, not through ad hoc view mutations
+- parsing, matching, resolution and persistence must remain separate steps
+- import must not create domain data before validation and user review
+- matching may suggest candidates but must not silently decide identity
+- resolution must be explicit before commit
+- incomplete resolutions must not be committed
+
+Explicitly forbidden:
+
+- blind auto-merge on name equality
+- using names as unique keys
+- hiding ambiguity from the user
+
+
+------------------------------------------------------------
+MATCHING RULES
+------------------------------------------------------------
+
+Current matching is intentionally conservative.
+
+Allowed match qualities currently include:
+
+- `exact`
+- `normalized`
+- `legacySegmented`
+- `germanNormalized`
+
+Rules:
+
+- stronger match qualities must keep their precedence
+- additive matching rules must not silently replace stronger existing matches
+- matching remains a suggestion layer, not a truth layer
+
+
+------------------------------------------------------------
+SERVICES AND INTERACTORS
+------------------------------------------------------------
+
+Services encapsulate feature operations and persistence-related domain workflows.
+
+Examples in GradeManagement:
+
+- `GradebookRepository`
+- `GradebookNodeService`
+- `GradebookStudentService`
+- `GradebookTreeService`
+- `GradebookDetailInteractor`
+- `CSVImportService`
+
+Rules:
+
+- views must not perform structural mutations directly
+- repository logic must remain outside views
+- import commit workflows must reuse existing repository/service behavior where possible
+- feature-specific services should remain inside the feature unless truly reused elsewhere
+
+
+------------------------------------------------------------
+VIEW MODELS
+------------------------------------------------------------
+
+ViewModels mediate between UI and feature/domain services.
+
+Responsibilities:
+
+- UI state
+- interaction handling
+- coordinating service/interactor calls
+- presentation-specific synchronization
+
+They must not duplicate domain semantics.
 
 
 ------------------------------------------------------------
@@ -321,47 +428,9 @@ Rendering code may contain:
 Rendering code must NOT contain:
 
 - grade calculation logic
+- import matching logic
 - persistence logic
-- structural mutation logic
-
-Small rendering-specific resolver helpers are allowed if they only determine
-presentation state and do not change domain behavior.
-
-
-------------------------------------------------------------
-COLOR OWNERSHIP MODEL
-------------------------------------------------------------
-
-Color behavior follows an explicit ownership model.
-
-There are three rendering contexts:
-
-1. Header tile
-2. Container / L-area
-3. Data column
-
-Rules:
-
-- each rendering context resolves color ownership independently
-- color ownership must be explicit
-- implicit global inheritance is not allowed
-
-Current intended semantics:
-
-Header tile:
-- owner is the rendered node itself
-
-Container / L-area:
-- owner is the rendered node itself
-
-Data column:
-- owner is the node of that exact column itself
-
-Important consequence:
-
-- a parent node does NOT color descendant data columns
-- a node colors only its own data column
-- header and data ownership are intentionally separate concerns
+- structural mutation workflows
 
 
 ------------------------------------------------------------
@@ -387,56 +456,33 @@ Important note:
 
 
 ------------------------------------------------------------
-SERVICES
+BACKWARDS COMPATIBILITY
 ------------------------------------------------------------
 
-Services encapsulate feature operations and persistence-related domain workflows.
-
-Examples in GradeManagement:
-
-- `GradebookNodeService`
-- `GradebookRepository`
-- `GradebookStudentService`
-- `GradebookTreeService`
-- `GradebookDetailInteractor`
+Backwards compatibility should be treated pragmatically.
 
 Rules:
 
-- Views must not perform structural tree mutations directly
-- services/interactors own structural mutation workflows
-- repository logic must remain outside views
-- feature-specific services should remain inside the feature unless truly reused elsewhere
+- existing stable feature behavior should not be broken without reason
+- data migrations should be deliberate, not accidental
+- temporary compatibility paths are acceptable during refactors
+- compatibility code should be removed once the new architecture is stable and verified
 
 
 ------------------------------------------------------------
-VIEW MODELS
+FUTURE COMPATIBILITY
 ------------------------------------------------------------
 
-ViewModels mediate between UI and feature/domain services.
+The architecture should remain compatible with future features such as:
 
-Responsibilities:
+- cross-module student reuse
+- export systems
+- sync
+- analytics
+- richer teacher workflows
 
-- UI state
-- user interaction handling
-- coordinating service/interactor calls
-- presentation-specific state synchronization
-
-They must not duplicate domain logic or calculation semantics.
-
-
-------------------------------------------------------------
-GRID RENDERING
-------------------------------------------------------------
-
-The gradebook grid is a visual projection of the tree.
-
-Rules:
-
-- grid rendering must not modify the tree
-- layout must reflect node structure
-- scroll and zoom systems remain independent from calculation logic
-- sticky header behavior must remain rendering-only behavior
-- local rendering fixes are allowed when they do not change domain semantics
+This does not require new architecture layers today.
+It requires keeping responsibilities clear and coupling controlled.
 
 
 ------------------------------------------------------------
@@ -449,60 +495,31 @@ AI must NOT:
 
 - refactor unrelated systems
 - change calculation semantics unintentionally
-- change tree invariants
+- break identity/enrollment rules
+- introduce silent import merges
 - introduce broad new architectural layers without explicit approval
-- move feature-specific logic out of its feature without reason
 
 AI should:
 
 - modify the minimal set of files
 - preserve tree invariants
+- preserve identity and enrollment semantics
 - preserve existing UI behavior unless explicitly changing it
 - reuse existing services/interactors
-- keep rendering fixes local when possible
-
-
-------------------------------------------------------------
-BACKWARDS COMPATIBILITY
-------------------------------------------------------------
-
-New changes must not break existing gradebooks.
-
-Structural changes must preserve:
-
-- node IDs
-- student data
-- weights
-- column structure
-- migration safety expectations
-
-
-------------------------------------------------------------
-FUTURE COMPATIBILITY
-------------------------------------------------------------
-
-The architecture should remain compatible with future features such as:
-
-- sync
-- export systems
-- analytics
-- advanced grade calculations
-- richer teacher workflows
-
-This does not require new architecture layers today.
-It requires keeping responsibilities clear and coupling controlled.
 
 
 ------------------------------------------------------------
 CORE PRINCIPLE
 ------------------------------------------------------------
 
-The gradebook behaves as a mathematical tree of weighted aggregations.
+The app combines a stable person identity model, explicit participation context and a mathematical gradebook tree.
 
-The UI visualizes this tree and its columns.
+The UI visualizes these structures.
 
 The UI must never violate:
 
+- identity semantics
+- enrollment semantics
 - tree structure
 - ownership semantics
 - calculation semantics

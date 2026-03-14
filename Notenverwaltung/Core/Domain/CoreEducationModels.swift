@@ -84,8 +84,9 @@ final class SchoolClass {
     var schoolYear: String
     var createdAt: Date
 
-    @Relationship(deleteRule: .cascade)
-    var students: [Student]
+    // Deleting a class removes its memberships. An enrollment without its class is invalid.
+    @Relationship(deleteRule: .cascade, inverse: \ClassEnrollment.schoolClass)
+    var enrollments: [ClassEnrollment]
 
     @Relationship(deleteRule: .cascade, inverse: \GradebookTabEntity.schoolClass)
     var gradebookTabs: [GradebookTabEntity]
@@ -99,7 +100,7 @@ final class SchoolClass {
         self.subject = subject
         self.schoolYear = schoolYear
         self.createdAt = Date()
-        self.students = []
+        self.enrollments = []
         self.gradebookTabs = []
         self.homeroomTeacherId = nil
         self.courseIDs = []
@@ -107,6 +108,38 @@ final class SchoolClass {
 
     var displayName: String {
         "\(name) - \(subject)"
+    }
+}
+
+@Model
+final class ClassEnrollment {
+    var id: UUID
+    var studentNumber: Int?
+    var joinedAt: Date?
+    var isActive: Bool
+
+    // SwiftData keeps relationships optional in storage, but construction must provide both sides.
+    var student: Student?
+    var schoolClass: SchoolClass?
+    // Rows are projections of a class membership and must not outlive that membership.
+    @Relationship(deleteRule: .cascade, inverse: \GradebookRowEntity.classEnrollment)
+    var gradebookRows: [GradebookRowEntity]
+
+    init(
+        id: UUID = UUID(),
+        student: Student,
+        schoolClass: SchoolClass,
+        studentNumber: Int? = nil,
+        joinedAt: Date? = nil,
+        isActive: Bool = true
+    ) {
+        self.id = id
+        self.student = student
+        self.schoolClass = schoolClass
+        self.studentNumber = studentNumber
+        self.joinedAt = joinedAt
+        self.isActive = isActive
+        self.gradebookRows = []
     }
 }
 
@@ -119,7 +152,8 @@ final class Course {
     var teacherId: UUID?
     var schoolYearId: UUID?
     var termId: UUID?
-    var enrolledStudentIDs: [UUID]
+    // Legacy membership path. Do not write new course memberships here; replace with CourseEnrollment later.
+    private(set) var enrolledStudentIDs: [UUID]
 
     init(
         id: UUID = UUID(),
@@ -147,25 +181,24 @@ final class Student {
     var id: UUID
     var firstName: String
     var lastName: String
-    var studentNumber: Int
-    var classId: UUID
 
+    // Legacy path. Keep compatible until all grade data reads through GradebookRow.
     @Relationship(deleteRule: .cascade)
     var gradeEntries: [GradeEntry]
 
-    @Relationship(deleteRule: .nullify, inverse: \GradebookRowEntity.student)
-    var gradebookRows: [GradebookRowEntity]
+    // Deleting a student removes all memberships. An enrollment without its person is invalid.
+    @Relationship(deleteRule: .cascade, inverse: \ClassEnrollment.student)
+    var classEnrollments: [ClassEnrollment]
 
-    var courseIDs: [UUID]
+    // Legacy membership path. Do not write new course memberships here; replace with CourseEnrollment later.
+    private(set) var courseIDs: [UUID]
 
-    init(firstName: String, lastName: String, studentNumber: Int, classId: UUID) {
+    init(firstName: String, lastName: String) {
         self.id = UUID()
         self.firstName = firstName
         self.lastName = lastName
-        self.studentNumber = studentNumber
-        self.classId = classId
         self.gradeEntries = []
-        self.gradebookRows = []
+        self.classEnrollments = []
         self.courseIDs = []
     }
 

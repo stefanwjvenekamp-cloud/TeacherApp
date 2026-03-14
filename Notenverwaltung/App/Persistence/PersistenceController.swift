@@ -12,6 +12,7 @@ enum PersistenceController {
         Term.self,
         Course.self,
         SchoolClass.self,
+        ClassEnrollment.self,
         GradebookTabEntity.self,
         GradebookNodeEntity.self,
         GradebookRowEntity.self,

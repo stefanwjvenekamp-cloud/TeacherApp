@@ -3,43 +3,663 @@ import SwiftData
 import Testing
 @testable import Notenverwaltung
 
+// MARK: - CSV Parsing / Validation
+
 struct CSVImportServiceTests {
-    @Test func parsesHeaderedAndNumberedRows() {
+    @Test func parsesHeaderedRowsIntoStructuredCandidates() {
         let csv = """
         Nr.;Nachname;Vorname
         1;Meyer;Anna
         2;Schulz;Ben
         """
 
-        let names = CSVImportService.parseStudentNames(from: csv)
+        let result = CSVImportService.parseCandidates(from: csv)
 
-        #expect(names == ["Meyer Anna", "Schulz Ben"])
+        #expect(result.parsingErrors.isEmpty)
+        #expect(result.validCandidates.count == 2)
+        #expect(result.validCandidates.map(\.displayName) == ["Anna Meyer", "Ben Schulz"])
+        #expect(result.validCandidates.map(\.normalizedFirstName) == ["anna", "ben"])
+        #expect(result.validCandidates.map(\.normalizedLastName) == ["meyer", "schulz"])
     }
 
-    @Test func skipsHeaderRowsAndKeepsSingleColumnNames() {
+    @Test func reportsMissingRequiredHeaders() {
         let csv = """
-        Schülername
-        Anna Meyer
-        
-        Ben Schulz
+        Schülername;Klasse
+        Anna Meyer;10A
         """
 
-        let names = CSVImportService.parseStudentNames(from: csv)
+        let result = CSVImportService.parseCandidates(from: csv)
 
-        #expect(names == ["Anna Meyer", "Ben Schulz"])
+        #expect(result.candidates.isEmpty)
+        #expect(result.parsingErrors.count == 2)
     }
 
-    @Test func fallsBackToFirstNonEmptyColumnWhenSecondColumnIsMissing() {
+    @Test func marksRowsWithEmptyNamesAsInvalid() {
         let csv = """
-        Nachname;Vorname
-        Meyer;
+        Vorname;Nachname
+         Anna ;  Meyer
         ;Ben
-        Schulz;Tom
+        Tom;
         """
 
-        let names = CSVImportService.parseStudentNames(from: csv)
+        let result = CSVImportService.parseCandidates(from: csv)
 
-        #expect(names == ["Meyer", "Schulz Tom"])
+        #expect(result.candidates.count == 3)
+        #expect(result.validCandidates.map(\.displayName) == ["Anna Meyer"])
+        #expect(result.candidates[0].validationStatus == .valid)
+        #expect(result.candidates[1].validationStatus == .invalid)
+        #expect(result.candidates[2].validationStatus == .invalid)
+    }
+
+    @Test func ignoresEmptyLinesBetweenValidRows() {
+        let csv = """
+        Vorname;Nachname
+
+        Anna;Meyer
+
+        Ben;Schulz
+        """
+
+        let result = CSVImportService.parseCandidates(from: csv)
+
+        #expect(result.candidates.count == 2)
+        #expect(result.validCandidates.map(\.displayName) == ["Anna Meyer", "Ben Schulz"])
+    }
+
+    @Test func trimsAndNormalizesCandidateValues() {
+        let csv = """
+        Vorname;Nachname
+          Anna   Maria  ;  Von   Meyer
+        """
+
+        let result = CSVImportService.parseCandidates(from: csv)
+        let candidate = try! #require(result.candidates.first)
+
+        #expect(candidate.originalFirstName == "Anna   Maria")
+        #expect(candidate.originalLastName == "Von   Meyer")
+        #expect(candidate.normalizedFirstName == "anna maria")
+        #expect(candidate.normalizedLastName == "von meyer")
+    }
+
+    // MARK: Matching
+
+    @Test func returnsNoMatchWhenNoStudentExists() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .none)
+        #expect(results[0].candidateMatches.isEmpty)
+    }
+
+    @Test func returnsExactMatchForExactNames() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .exact)
+    }
+
+    @Test func returnsNormalizedMatchWhenOriginalValuesDifferOnlyByNormalization() {
+        let csv = """
+        Vorname;Nachname
+        ANNA;MEYER
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .normalized)
+    }
+
+    @Test func returnsMultipleMatchesWhenSeveralStudentsShareTheSameName() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let firstStudent = Student(firstName: "Anna", lastName: "Meyer")
+        let secondStudent = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [firstStudent, secondStudent])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .multiple)
+        #expect(results[0].candidateMatches.count == 2)
+        #expect(results[0].candidateMatches.allSatisfy { $0.matchQuality == .exact })
+    }
+
+    @Test func muellerMatchesMuellerViaGermanNormalization() {
+        let csv = """
+        Vorname;Nachname
+        Tim;Mueller
+        """
+
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .germanNormalized)
+    }
+
+    @Test func weissMatchesWeissViaGermanNormalization() {
+        let csv = """
+        Vorname;Nachname
+        Tina;Weiss
+        """
+
+        let student = Student(firstName: "Tina", lastName: "Weiß")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .germanNormalized)
+    }
+
+    @Test func baeckerMatchesBaeckerViaGermanNormalization() {
+        let csv = """
+        Vorname;Nachname
+        Lena;Baecker
+        """
+
+        let student = Student(firstName: "Lena", lastName: "Bäcker")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .single)
+        #expect(results[0].candidateMatches.count == 1)
+        #expect(results[0].candidateMatches[0].matchQuality == .germanNormalized)
+    }
+
+    @Test func doesNotMatchDifferentGermanNamesLikeMayerAndMeier() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Mayer
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meier")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(results.count == 1)
+        #expect(results[0].matchStatus == .none)
+        #expect(results[0].candidateMatches.isEmpty)
+    }
+
+    @Test func returnsLegacySegmentedMatchForLegacySingleStringImportWithMultiPartFirstName() {
+        let candidate = try! #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nJanne-Mieke Elise;Kandelhard").candidates.first
+        )
+
+        let legacyImportedName = "Janne-Mieke Elise Kandelhard"
+        let splitLegacyStudent = GradebookStudentService.splitName(legacyImportedName)
+        let student = Student(
+            firstName: splitLegacyStudent.0,
+            lastName: splitLegacyStudent.1
+        )
+
+        let results = CSVImportService.matchCandidates([candidate], against: [student])
+        let matchResult = try! #require(results.first)
+
+        #expect(splitLegacyStudent.0 == "Janne-Mieke")
+        #expect(splitLegacyStudent.1 == "Elise Kandelhard")
+        #expect(candidate.originalFirstName == "Janne-Mieke Elise")
+        #expect(candidate.originalLastName == "Kandelhard")
+        #expect(matchResult.matchStatus == .single)
+        #expect(matchResult.candidateMatches.count == 1)
+        #expect(matchResult.candidateMatches[0].matchQuality == .legacySegmented)
+        #expect(matchResult.candidateMatches[0].reason == "legacySegmented")
+    }
+
+    @Test func doesNotReturnLegacySegmentedMatchForUnrelatedCombination() {
+        let candidate = try! #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nJanne-Mieke Elise;Kandelhard").candidates.first
+        )
+
+        let student = Student(
+            firstName: "Janne-Mieke",
+            lastName: "Elise Sommer"
+        )
+
+        let results = CSVImportService.matchCandidates([candidate], against: [student])
+        let matchResult = try! #require(results.first)
+
+        #expect(matchResult.matchStatus == .none)
+        #expect(matchResult.candidateMatches.isEmpty)
+    }
+
+    @MainActor
+    @Test func matchDisplayLabelShowsEnrollmentContextWhenAvailable() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let firstClass = SchoolClass(name: "10B", subject: "Mathe", schoolYear: "2025/2026")
+        let secondClass = SchoolClass(name: "9A", subject: "Deutsch", schoolYear: "2025/2026")
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        context.insert(firstClass)
+        context.insert(secondClass)
+        context.insert(student)
+        _ = GradebookRepository.enrollment(for: student, studentNumber: 14, in: firstClass, context: context)
+        _ = GradebookRepository.enrollment(for: student, studentNumber: nil, in: secondClass, context: context)
+
+        let match = CSVStudentMatch(student: student, matchQuality: .exact, reason: "exact")
+
+        #expect(match.displayLabel.contains("Tim Müller"))
+        #expect(match.contextSummary.contains("10B Nr. 14"))
+        #expect(match.contextSummary.contains("9A"))
+    }
+
+    @Test func matchDisplayLabelUsesFallbackWhenNoContextExists() {
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        let match = CSVStudentMatch(student: student, matchQuality: .exact, reason: "exact")
+
+        #expect(match.displayLabel.contains("Tim Müller"))
+        #expect(match.contextSummary.contains("Ohne Klassenzuordnung"))
+        #expect(match.contextSummary.contains(String(student.id.uuidString.prefix(6))))
+    }
+
+    @Test func skipsInvalidImportCandidatesDuringMatching() {
+        let csv = """
+        Vorname;Nachname
+        ;Meyer
+        Anna;Schulz
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Schulz")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let results = CSVImportService.matchCandidates(candidates, against: [student])
+
+        #expect(candidates.count == 2)
+        #expect(results.count == 1)
+        #expect(results[0].importCandidate.originalFirstName == "Anna")
+        #expect(results[0].candidateMatches.count == 1)
+    }
+
+    // MARK: Resolution
+
+    @Test func proposesCreateNewStudentWhenNoMatchExists() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [])
+        let resolutions = CSVImportService.makeInitialResolutions(for: matchResults)
+
+        #expect(resolutions.count == 1)
+        #expect(resolutions[0].resolutionAction == .createNewStudent)
+        #expect(resolutions[0].isComplete)
+    }
+
+    @Test func keepsSingleMatchResolutionOpenUntilExplicitlyChosen() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [student])
+        let resolution = CSVImportService.makeInitialResolution(for: matchResults[0])
+
+        #expect(matchResults[0].matchStatus == .single)
+        #expect(resolution.resolutionAction == .unresolved)
+        #expect(!resolution.isComplete)
+    }
+
+    @Test func keepsMultipleMatchesIncompleteWithoutExplicitSelection() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let firstStudent = Student(firstName: "Anna", lastName: "Meyer")
+        let secondStudent = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [firstStudent, secondStudent])
+        let resolution = CSVImportService.makeInitialResolution(for: matchResults[0])
+
+        #expect(matchResults[0].matchStatus == .multiple)
+        #expect(resolution.resolutionAction == .unresolved)
+        #expect(!resolution.isComplete)
+    }
+
+    @Test func skipResolutionIsComplete() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [])
+        var resolution = CSVImportService.makeInitialResolution(for: matchResults[0])
+        resolution.resolutionAction = .skip
+
+        #expect(resolution.isComplete)
+    }
+
+    @Test func useExistingStudentResolutionRequiresConcreteStudentSelection() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [student])
+        var resolution = CSVImportService.makeInitialResolution(for: matchResults[0])
+
+        #expect(!resolution.isComplete)
+
+        resolution.resolutionAction = .useExistingStudent(studentID: student.id)
+
+        #expect(resolution.isComplete)
+    }
+
+    @Test func unresolvedResolutionIsIncomplete() {
+        let csv = """
+        Vorname;Nachname
+        Anna;Meyer
+        """
+
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        let candidates = CSVImportService.parseCandidates(from: csv).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [student])
+        let resolution = CSVImportService.makeInitialResolution(for: matchResults[0])
+
+        #expect(resolution.resolutionAction == .unresolved)
+        #expect(!resolution.isComplete)
+    }
+}
+
+// MARK: - CSV Commit
+
+struct CSVImportCommitTests {
+    @MainActor
+    @Test func createNewStudentCommitsStudentEnrollmentAndRow() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        context.insert(schoolClass)
+
+        let candidate = try #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nAnna;Meyer").candidates.first
+        )
+        let matchResult = CSVImportService.matchCandidates([candidate], against: []).first!
+        let resolution = CSVImportService.makeInitialResolution(for: matchResult)
+
+        let result = try CSVImportService.commitResolutions([resolution], into: schoolClass, context: context)
+
+        #expect(result.outcomes.count == 1)
+        #expect(result.outcomes[0].status == .committed)
+        #expect(result.createdStudents.count == 1)
+        #expect(schoolClass.enrollments.count == 1)
+        let tab = try #require(GradebookRepository.tabs(for: schoolClass).first)
+        #expect(GradebookRepository.rows(for: tab).count == 1)
+    }
+
+    @MainActor
+    @Test func useExistingStudentDoesNotCreateAnotherStudentObject() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        context.insert(schoolClass)
+        context.insert(student)
+
+        let candidate = try #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nAnna;Meyer").candidates.first
+        )
+        let matchResult = CSVImportService.matchCandidates([candidate], against: [student]).first!
+        let resolution = CSVImportResolution(
+            importCandidate: candidate,
+            matchResult: matchResult,
+            resolutionAction: .useExistingStudent(studentID: student.id)
+        )
+
+        let result = try CSVImportService.commitResolutions([resolution], into: schoolClass, context: context)
+        let students = try context.fetch(FetchDescriptor<Student>())
+
+        #expect(result.outcomes[0].status == .committed)
+        #expect(result.createdStudents.isEmpty)
+        #expect(result.reusedStudents.count == 1)
+        #expect(students.count == 1)
+        #expect(students.first?.id == student.id)
+    }
+
+    @MainActor
+    @Test func commitReusesExistingEnrollmentAndDoesNotDuplicateRows() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        context.insert(schoolClass)
+        context.insert(student)
+        GradebookRepository.ensureDefaultTab(for: schoolClass, in: context)
+        let enrollment = GradebookRepository.enrollment(for: student, studentNumber: 1, in: schoolClass, context: context)
+        GradebookRepository.appendRows(for: enrollment, in: schoolClass, context: context)
+
+        let candidate = try #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nAnna;Meyer").candidates.first
+        )
+        let matchResult = CSVImportService.matchCandidates([candidate], against: [student]).first!
+        let resolution = CSVImportResolution(
+            importCandidate: candidate,
+            matchResult: matchResult,
+            resolutionAction: .useExistingStudent(studentID: student.id)
+        )
+
+        let result = try CSVImportService.commitResolutions([resolution], into: schoolClass, context: context)
+        let tab = try #require(GradebookRepository.tabs(for: schoolClass).first)
+
+        #expect(result.outcomes[0].createdEnrollment == false)
+        #expect(result.outcomes[0].createdRows == 0)
+        #expect(schoolClass.enrollments.count == 1)
+        #expect(GradebookRepository.rows(for: tab).count == 1)
+    }
+
+    @MainActor
+    @Test func skipDoesNotChangeData() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        context.insert(schoolClass)
+
+        let candidate = try #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nAnna;Meyer").candidates.first
+        )
+        let matchResult = CSVImportService.matchCandidates([candidate], against: []).first!
+        let resolution = CSVImportResolution(
+            importCandidate: candidate,
+            matchResult: matchResult,
+            resolutionAction: .skip
+        )
+
+        let result = try CSVImportService.commitResolutions([resolution], into: schoolClass, context: context)
+        let students = try context.fetch(FetchDescriptor<Student>())
+
+        #expect(result.outcomes[0].status == .skipped)
+        #expect(students.isEmpty)
+        #expect(schoolClass.enrollments.isEmpty)
+        #expect(GradebookRepository.tabs(for: schoolClass).isEmpty)
+    }
+
+    @MainActor
+    @Test func unresolvedResolutionIsNotCommitted() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        context.insert(schoolClass)
+        context.insert(student)
+
+        let candidate = try #require(
+            CSVImportService.parseCandidates(from: "Vorname;Nachname\nAnna;Meyer").candidates.first
+        )
+        let matchResult = CSVImportService.matchCandidates([candidate], against: [student]).first!
+        let resolution = CSVImportService.makeInitialResolution(for: matchResult)
+
+        let result = try CSVImportService.commitResolutions([resolution], into: schoolClass, context: context)
+        let students = try context.fetch(FetchDescriptor<Student>())
+
+        #expect(result.outcomes[0].status == .rejected)
+        #expect(students.count == 1)
+        #expect(schoolClass.enrollments.isEmpty)
+    }
+
+    @MainActor
+    @Test func identicalCsvRowsWithCreateNewStudentCreateTwoSeparateStudents() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        context.insert(schoolClass)
+
+        let candidates = CSVImportService.parseCandidates(from: """
+        Vorname;Nachname
+        Tim;Müller
+        Tim;Müller
+        """).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [])
+        let resolutions = CSVImportService.makeInitialResolutions(for: matchResults)
+
+        let result = try CSVImportService.commitResolutions(resolutions, into: schoolClass, context: context)
+
+        let students = try context.fetch(
+            FetchDescriptor<Student>(
+                predicate: #Predicate { $0.firstName == "Tim" && $0.lastName == "Müller" }
+            )
+        )
+        let enrollments = try context.fetch(FetchDescriptor<ClassEnrollment>())
+            .filter { enrollment in
+                enrollment.schoolClass?.id == schoolClass.id &&
+                students.contains(where: { $0.id == enrollment.student?.id })
+            }
+        let rows = try context.fetch(FetchDescriptor<GradebookRowEntity>())
+            .filter { row in
+                enrollments.contains(where: { $0.id == row.classEnrollment?.id })
+            }
+
+        #expect(result.outcomes.count == 2)
+        #expect(result.outcomes.allSatisfy { $0.status == .committed })
+        #expect(result.createdStudents.count == 2)
+        #expect(students.count == 2)
+        #expect(Set(students.map(\.id)).count == 2)
+        #expect(enrollments.count == 2)
+        #expect(Set(enrollments.compactMap(\.student?.id)).count == 2)
+        #expect(rows.count == 2)
+        #expect(Set(rows.compactMap(\.classEnrollment?.id)).count == 2)
+    }
+
+    @MainActor
+    @Test func identicalCsvRowsUsingSameExistingStudentReuseStudentEnrollmentAndRows() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Tim", lastName: "Müller")
+        context.insert(schoolClass)
+        context.insert(student)
+
+        let candidates = CSVImportService.parseCandidates(from: """
+        Vorname;Nachname
+        Tim;Müller
+        Tim;Müller
+        """).candidates
+        let matchResults = CSVImportService.matchCandidates(candidates, against: [student])
+        let resolutions = matchResults.map { matchResult in
+            CSVImportResolution(
+                importCandidate: matchResult.importCandidate,
+                matchResult: matchResult,
+                resolutionAction: .useExistingStudent(studentID: student.id)
+            )
+        }
+
+        let result = try CSVImportService.commitResolutions(resolutions, into: schoolClass, context: context)
+
+        let students = try context.fetch(FetchDescriptor<Student>())
+        let enrollments = try context.fetch(FetchDescriptor<ClassEnrollment>())
+            .filter { $0.schoolClass?.id == schoolClass.id && $0.student?.id == student.id }
+        let rows = try context.fetch(FetchDescriptor<GradebookRowEntity>())
+            .filter { $0.classEnrollment?.student?.id == student.id && $0.classEnrollment?.schoolClass?.id == schoolClass.id }
+
+        #expect(result.outcomes.count == 2)
+        #expect(result.outcomes.allSatisfy { $0.status == .committed })
+        #expect(result.createdStudents.isEmpty)
+        #expect(result.reusedStudents.count == 2)
+        #expect(students.count == 1)
+        #expect(enrollments.count == 1)
+        #expect(rows.count == 1)
+        #expect(result.outcomes.allSatisfy { $0.createdEnrollment == false || $0.createdRows <= 1 })
+    }
+}
+
+// MARK: - Enrollment Integrity
+
+struct EnrollmentIntegrityTests {
+    @MainActor
+    @Test func reusesExistingEnrollmentForSameStudentAndClass() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        context.insert(schoolClass)
+        context.insert(student)
+
+        let firstEnrollment = GradebookRepository.enrollment(
+            for: student,
+            studentNumber: 1,
+            in: schoolClass,
+            context: context
+        )
+        let secondEnrollment = GradebookRepository.enrollment(
+            for: student,
+            studentNumber: 2,
+            in: schoolClass,
+            context: context
+        )
+
+        #expect(firstEnrollment.id == secondEnrollment.id)
+        #expect(schoolClass.enrollments.count == 1)
+        #expect(firstEnrollment.studentNumber == 1)
+    }
+
+    @MainActor
+    @Test func doesNotCreateDuplicateEnrollmentForSameStudentAndClass() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
+        let student = Student(firstName: "Anna", lastName: "Meyer")
+        context.insert(schoolClass)
+        context.insert(student)
+
+        _ = GradebookRepository.enrollment(for: student, studentNumber: 1, in: schoolClass, context: context)
+        _ = GradebookRepository.enrollment(for: student, studentNumber: 1, in: schoolClass, context: context)
+        try context.save()
+
+        let fetchedClass = try #require(fetchFirst(FetchDescriptor<SchoolClass>(), in: context))
+        #expect(fetchedClass.enrollments.count == 1)
     }
 }
 
@@ -436,9 +1056,14 @@ struct GradebookNodeServiceTopLevelMergeTests {
         context.insert(schoolClass)
         context.insert(tab)
 
-        let student = Student(firstName: "Anna", lastName: "Meyer", studentNumber: 1, classId: schoolClass.id)
-        schoolClass.students.append(student)
-        let row = GradebookRowEntity(id: student.id, sortOrder: 0, tab: tab, student: student)
+        let (student, enrollment) = insertStudentWithEnrollment(
+            firstName: "Anna",
+            lastName: "Meyer",
+            studentNumber: 1,
+            into: schoolClass,
+            context: context
+        )
+        let row = GradebookRowEntity(sortOrder: 0, tab: tab, classEnrollment: enrollment)
         context.insert(row)
 
         let firstAreaID = UUID()
@@ -507,11 +1132,16 @@ struct GradebookNodeServiceTopLevelMergeTests {
         let context = ModelContext(container)
         let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
         let tab = GradebookTabEntity(title: "2025/2026", sortOrder: 0, schoolClass: schoolClass)
-        let student = Student(firstName: "Anna", lastName: "Meyer", studentNumber: 1, classId: schoolClass.id)
-        schoolClass.students.append(student)
         context.insert(schoolClass)
         context.insert(tab)
-        let row = GradebookRowEntity(id: student.id, sortOrder: 0, tab: tab, student: student)
+        let (student, enrollment) = insertStudentWithEnrollment(
+            firstName: "Anna",
+            lastName: "Meyer",
+            studentNumber: 1,
+            into: schoolClass,
+            context: context
+        )
+        let row = GradebookRowEntity(sortOrder: 0, tab: tab, classEnrollment: enrollment)
         context.insert(row)
         try context.save()
 
@@ -672,8 +1302,13 @@ struct GradebookNodeServiceMoveTests {
         context.insert(schoolClass)
         context.insert(tab)
 
-        let student = Student(firstName: "Anna", lastName: "Meyer", studentNumber: 1, classId: schoolClass.id)
-        schoolClass.students.append(student)
+        let (student, _) = insertStudentWithEnrollment(
+            firstName: "Anna",
+            lastName: "Meyer",
+            studentNumber: 1,
+            into: schoolClass,
+            context: context
+        )
 
         let sourceParentID = UUID()
         let destinationParentID = UUID()
@@ -760,9 +1395,9 @@ struct GradebookMigrationServiceTests {
         let examID = UUID()
         let studentID = UUID()
         let tabID = UUID()
-        let student = Student(firstName: "Anna", lastName: "Meyer", studentNumber: 1, classId: schoolClass.id)
+        let student = Student(firstName: "Anna", lastName: "Meyer")
         student.id = studentID
-        schoolClass.students.append(student)
+        context.insert(student)
         let snapshotState = ClassGradebooksState(
             tabs: [
                 GradebookTabState(
@@ -796,25 +1431,14 @@ struct GradebookMigrationServiceTests {
 
         let didMigrate = GradebookMigrationService.migrateIfNeeded(context: context)
 
-        #expect(didMigrate)
+        #expect(!didMigrate)
 
         let migratedClass = try #require(fetchFirst(FetchDescriptor<SchoolClass>(), in: context))
-        let tab = try #require(GradebookRepository.tabs(for: migratedClass).first)
-        let row = try #require(GradebookRepository.rows(for: tab).first)
-        let root = try #require(GradebookRepository.rootNode(for: tab))
         let snapshots = try context.fetch(FetchDescriptor<GradebookSnapshot>())
 
-        #expect(tab.id == tabID)
-        #expect(tab.roundingDecimals == 1)
-        #expect(migratedClass.students.count == 1)
-        #expect(migratedClass.students.first?.fullName == "Anna Meyer")
-        #expect(row.student?.id == studentID)
-        #expect(GradebookRepository.cellValues(for: row)[examID] == "2")
-        #expect(root.isTechnicalRoot)
-        #expect(root.showsAsColumn == false)
-        #expect(root.children.count == 1)
-        #expect(root.children.first?.children.map(\.id) == [examID])
-        #expect(snapshots.isEmpty)
+        #expect(migratedClass.gradebookTabs.isEmpty)
+        #expect(snapshots.count == 1)
+        #expect(snapshots.first?.classId == schoolClass.id)
     }
 }
 
@@ -939,7 +1563,7 @@ struct GradebookSeedNavigationTests {
             )
 
             #expect(!viewModel.columns.isEmpty)
-            #expect(viewModel.rows.count == schoolClass.students.count)
+            #expect(viewModel.rows.count == schoolClass.enrollments.filter(\.isActive).count)
         }
     }
 }
@@ -952,19 +1576,37 @@ struct GradebookStudentMoveTests {
         let schoolClass = SchoolClass(name: "10a", subject: "Mathe", schoolYear: "2025/2026")
         context.insert(schoolClass)
 
-        let first = Student(firstName: "Anna", lastName: "Meyer", studentNumber: 1, classId: schoolClass.id)
-        let second = Student(firstName: "Ben", lastName: "Schulz", studentNumber: 2, classId: schoolClass.id)
-        let third = Student(firstName: "Clara", lastName: "Becker", studentNumber: 3, classId: schoolClass.id)
-        schoolClass.students = [first, second, third]
+        let (first, firstEnrollment) = insertStudentWithEnrollment(
+            firstName: "Anna",
+            lastName: "Meyer",
+            studentNumber: 1,
+            into: schoolClass,
+            context: context
+        )
+        let (second, secondEnrollment) = insertStudentWithEnrollment(
+            firstName: "Ben",
+            lastName: "Schulz",
+            studentNumber: 2,
+            into: schoolClass,
+            context: context
+        )
+        let (third, thirdEnrollment) = insertStudentWithEnrollment(
+            firstName: "Clara",
+            lastName: "Becker",
+            studentNumber: 3,
+            into: schoolClass,
+            context: context
+        )
 
         let firstTab = GradebookTabEntity(title: "2025/2026", sortOrder: 0, schoolClass: schoolClass)
         let secondTab = GradebookTabEntity(title: "2026/2027", sortOrder: 1, schoolClass: schoolClass)
         context.insert(firstTab)
         context.insert(secondTab)
 
-        for (index, student) in [first, second, third].enumerated() {
-            context.insert(GradebookRowEntity(id: student.id, sortOrder: index, tab: firstTab, student: student))
-            context.insert(GradebookRowEntity(id: student.id, sortOrder: index, tab: secondTab, student: student))
+        let enrollments = [firstEnrollment, secondEnrollment, thirdEnrollment]
+        for (index, enrollment) in enrollments.enumerated() {
+            context.insert(GradebookRowEntity(sortOrder: index, tab: firstTab, classEnrollment: enrollment))
+            context.insert(GradebookRowEntity(sortOrder: index, tab: secondTab, classEnrollment: enrollment))
         }
         try context.save()
 
@@ -976,8 +1618,8 @@ struct GradebookStudentMoveTests {
             context: context
         )
 
-        #expect(GradebookRepository.rows(for: firstTab).map(\.id) == [second.id, third.id, first.id])
-        #expect(GradebookRepository.rows(for: secondTab).map(\.id) == [second.id, third.id, first.id])
+        #expect(GradebookRepository.rows(for: firstTab).compactMap(\.resolvedStudentID) == [second.id, third.id, first.id])
+        #expect(GradebookRepository.rows(for: secondTab).compactMap(\.resolvedStudentID) == [second.id, third.id, first.id])
     }
 }
 
@@ -985,6 +1627,25 @@ struct GradebookStudentMoveTests {
 private func makeInMemoryContainer() throws -> ModelContainer {
     let configuration = ModelConfiguration(schema: PersistenceController.schema, isStoredInMemoryOnly: true)
     return try ModelContainer(for: PersistenceController.schema, configurations: [configuration])
+}
+
+@MainActor
+private func insertStudentWithEnrollment(
+    firstName: String,
+    lastName: String,
+    studentNumber: Int,
+    into schoolClass: SchoolClass,
+    context: ModelContext
+) -> (Student, ClassEnrollment) {
+    let student = Student(firstName: firstName, lastName: lastName)
+    context.insert(student)
+    let enrollment = GradebookRepository.enrollment(
+        for: student,
+        studentNumber: studentNumber,
+        in: schoolClass,
+        context: context
+    )
+    return (student, enrollment)
 }
 
 private func fetchFirst<T: PersistentModel>(_ descriptor: FetchDescriptor<T>, in context: ModelContext) -> T? {

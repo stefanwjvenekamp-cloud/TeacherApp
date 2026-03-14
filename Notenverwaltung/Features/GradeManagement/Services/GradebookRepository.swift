@@ -3,6 +3,48 @@ import SwiftData
 
 enum GradebookRepository {
     @MainActor
+    static func studentID(for row: GradebookRowEntity) -> UUID? {
+        row.resolvedStudentID
+    }
+
+    @MainActor
+    static func activeEnrollments(for schoolClass: SchoolClass) -> [ClassEnrollment] {
+        schoolClass.enrollments
+            .filter(\.isActive)
+            .sorted { ($0.studentNumber ?? 0) < ($1.studentNumber ?? 0) }
+    }
+
+    @MainActor
+    static func enrollment(
+        for student: Student,
+        studentNumber: Int? = nil,
+        in schoolClass: SchoolClass,
+        context: ModelContext
+    ) -> ClassEnrollment {
+        if let existing = schoolClass.enrollments.first(where: { $0.student?.id == student.id }) {
+            if existing.studentNumber == nil {
+                existing.studentNumber = studentNumber
+            }
+            return existing
+        }
+
+        let enrollment = ClassEnrollment(
+            student: student,
+            schoolClass: schoolClass,
+            studentNumber: studentNumber,
+            joinedAt: Date(),
+            isActive: true
+        )
+        context.insert(enrollment)
+        return enrollment
+    }
+
+    @MainActor
+    private static func rowEntity(forStudentID studentID: UUID, in tab: GradebookTabEntity) -> GradebookRowEntity? {
+        rows(for: tab).first { $0.resolvedStudentID == studentID }
+    }
+
+    @MainActor
     static func bootstrapTabsIfNeeded(
         for schoolClass: SchoolClass,
         state: ClassGradebooksState,
@@ -73,27 +115,36 @@ enum GradebookRepository {
     ) {
         guard tab.rows.isEmpty else { return }
 
-        let studentsByID = Dictionary(
-            schoolClass.students.map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        var enrollmentsByStudentID: [UUID: ClassEnrollment] = [:]
+        for enrollment in activeEnrollments(for: schoolClass) {
+            guard let studentID = enrollment.student?.id else { continue }
+            enrollmentsByStudentID[studentID] = enrollment
+        }
         var insertedStudentIDs = Set<UUID>()
         var sortOrder = 0
 
         for row in state.rows {
-            guard let student = studentsByID[row.id] else { continue }
-            let entity = GradebookRowEntity(id: row.id, sortOrder: sortOrder, tab: tab, student: student)
+            guard let enrollment = enrollmentsByStudentID[row.id],
+                  let student = enrollment.student else { continue }
+            let entity = GradebookRowEntity(
+                sortOrder: sortOrder,
+                tab: tab,
+                classEnrollment: enrollment
+            )
             context.insert(entity)
             insertedStudentIDs.insert(student.id)
             sortOrder += 1
         }
 
-        let remainingStudents = schoolClass.students
-            .filter { !insertedStudentIDs.contains($0.id) }
-            .sorted { $0.studentNumber < $1.studentNumber }
+        let remainingEnrollments = activeEnrollments(for: schoolClass)
+            .filter { !insertedStudentIDs.contains($0.student?.id ?? UUID()) }
 
-        for student in remainingStudents {
-            let entity = GradebookRowEntity(id: student.id, sortOrder: sortOrder, tab: tab, student: student)
+        for enrollment in remainingEnrollments {
+            let entity = GradebookRowEntity(
+                sortOrder: sortOrder,
+                tab: tab,
+                classEnrollment: enrollment
+            )
             context.insert(entity)
             sortOrder += 1
         }
@@ -105,7 +156,7 @@ enum GradebookRepository {
     static func rows(for tab: GradebookTabEntity) -> [GradebookRowEntity] {
         tab.rows.sorted {
             if $0.sortOrder == $1.sortOrder {
-                return ($0.student?.studentNumber ?? 0) < ($1.student?.studentNumber ?? 0)
+                return $0.resolvedStudentNumber < $1.resolvedStudentNumber
             }
             return $0.sortOrder < $1.sortOrder
         }
@@ -117,10 +168,11 @@ enum GradebookRepository {
         state: ClassGradebookState,
         in context: ModelContext
     ) {
-        let rowsByID = Dictionary(
-            rows(for: tab).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        var rowsByID: [UUID: GradebookRowEntity] = [:]
+        for row in rows(for: tab) {
+            guard let studentID = row.resolvedStudentID else { continue }
+            rowsByID[studentID] = row
+        }
         let nodesByID = Dictionary(
             flatNodes(for: tab).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -243,13 +295,19 @@ enum GradebookRepository {
 
     @MainActor
     static func appendRows(
-        for student: Student,
+        for enrollment: ClassEnrollment,
         in schoolClass: SchoolClass,
         context: ModelContext
     ) {
+        guard let studentID = enrollment.student?.id else { return }
         for tab in tabs(for: schoolClass) {
+            guard rowEntity(forStudentID: studentID, in: tab) == nil else { continue }
             let nextSortOrder = (rows(for: tab).map(\.sortOrder).max() ?? -1) + 1
-            let row = GradebookRowEntity(id: student.id, sortOrder: nextSortOrder, tab: tab, student: student)
+            let row = GradebookRowEntity(
+                sortOrder: nextSortOrder,
+                tab: tab,
+                classEnrollment: enrollment
+            )
             context.insert(row)
         }
         try? context.save()
@@ -262,7 +320,7 @@ enum GradebookRepository {
         context: ModelContext
     ) {
         for tab in tabs(for: schoolClass) {
-            for row in rows(for: tab) where row.student?.id == studentID || row.id == studentID {
+            for row in rows(for: tab) where row.resolvedStudentID == studentID {
                 context.delete(row)
             }
             normalizeRowSortOrder(for: tab)
@@ -286,9 +344,9 @@ enum GradebookRepository {
         context: ModelContext
     ) {
         let anchorRows = rows(for: anchorTab)
-        guard anchorRows.contains(where: { $0.id == studentID }) else { return }
+        guard anchorRows.contains(where: { $0.resolvedStudentID == studentID }) else { return }
 
-        var orderedIDs = anchorRows.map(\.id)
+        var orderedIDs = anchorRows.compactMap(\.resolvedStudentID)
         orderedIDs.removeAll { $0 == studentID }
 
         let insertionIndex: Int
@@ -305,8 +363,11 @@ enum GradebookRepository {
 
         for tab in tabs(for: schoolClass) {
             let tabRows = rows(for: tab)
-            let rowsByID = Dictionary(
-                tabRows.map { ($0.id, $0) },
+            let rowsByID: [UUID: GradebookRowEntity] = Dictionary(
+                tabRows.compactMap { row in
+                    guard let studentID = row.resolvedStudentID else { return nil }
+                    return (studentID, row)
+                },
                 uniquingKeysWith: { first, _ in first }
             )
 
@@ -317,7 +378,7 @@ enum GradebookRepository {
                 nextSortOrder += 1
             }
 
-            for row in tabRows where !orderedIDs.contains(row.id) {
+            for row in tabRows where !orderedIDs.contains(row.resolvedStudentID ?? UUID()) {
                 row.sortOrder = nextSortOrder
                 nextSortOrder += 1
             }
@@ -334,7 +395,7 @@ enum GradebookRepository {
         in tab: GradebookTabEntity,
         context: ModelContext
     ) {
-        guard let row = rows(for: tab).first(where: { $0.id == rowID }),
+        guard let row = rowEntity(forStudentID: rowID, in: tab),
               let node = flatNodes(for: tab).first(where: { $0.id == nodeID }) else { return }
 
         if let existing = row.cellValues.first(where: { $0.node?.id == nodeID }) {
@@ -353,10 +414,11 @@ enum GradebookRepository {
         nodeIDs: Set<UUID>,
         context: ModelContext
     ) {
-        let rowsByID = Dictionary(
-            rows(for: tab).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        var rowsByID: [UUID: GradebookRowEntity] = [:]
+        for row in rows(for: tab) {
+            guard let studentID = row.resolvedStudentID else { continue }
+            rowsByID[studentID] = row
+        }
         let nodesByID = Dictionary(
             flatNodes(for: tab).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }

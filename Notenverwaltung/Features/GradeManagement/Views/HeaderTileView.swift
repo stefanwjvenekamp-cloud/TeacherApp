@@ -13,6 +13,7 @@ struct HeaderTileView: View {
     let isLeaf: Bool
     let showWeightWarning: Bool
     let isMoving: Bool
+    let gesturesEnabled: Bool
 
     let onWeightChange: (Double) -> Void
     let onAddInput: () -> Void
@@ -75,25 +76,15 @@ struct HeaderTileView: View {
         }
         .opacity(isMoving ? 0.85 : 1.0)
         .contentShape(.dragPreview, RoundedRectangle(cornerRadius: isLeaf ? leafCornerRadius : 4, style: .continuous))
-        .onDrag {
-            dragProvider()
-        }
-        .contextMenu {
-            if !isRoot {
-                Button {
-                    onStartMove()
-                } label: {
-                    Label("Verschieben", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-                }
-            }
-            if !isRoot {
-                Button(role: .destructive) {
-                    onDelete()
-                } label: {
-                    Label("Löschen", systemImage: "trash")
-                }
-            }
-        }
+        .modifier(
+            HeaderTileGestureModifier(
+                gesturesEnabled: gesturesEnabled,
+                isRoot: isRoot,
+                dragProvider: dragProvider,
+                onStartMove: onStartMove,
+                onDelete: onDelete
+            )
+        )
         .sheet(isPresented: $showCustomWeightSheet) {
             NavigationStack {
                 Form {
@@ -127,16 +118,16 @@ struct HeaderTileView: View {
 
     private var leafContent: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 0) {
+            HStack(alignment: .center, spacing: 0) {
                 leadingControls
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             .padding(.top, leafControlTopPadding)
             .frame(height: leafControlRowHeight)
 
             centeredTitle
-                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, leafTitleHorizontalPadding)
                 .padding(.top, leafTitleTopPadding)
                 .padding(.bottom, leafTitleBottomPadding)
@@ -147,15 +138,21 @@ struct HeaderTileView: View {
 
     private var groupedContent: some View {
         VStack(spacing: 0) {
-            centeredTitle
-                .frame(width: max(width - 16, 0), height: min(height, 38))
-                .padding(.horizontal, 8)
-                .overlay(alignment: .leading) {
-                    leadingControls
-                        .padding(.leading, 8)
-                }
+            HStack(alignment: .center, spacing: 0) {
+                leadingControls
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, groupedControlTopPadding)
+            .frame(height: groupedControlRowHeight)
 
-            if height > 38 {
+            centeredTitle
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, groupedTitleHorizontalPadding)
+                .padding(.top, groupedTitleTopPadding)
+                .padding(.bottom, groupedTitleBottomPadding)
+
+            if height > groupedControlRowHeight {
                 Spacer(minLength: 0)
             }
         }
@@ -174,7 +171,7 @@ struct HeaderTileView: View {
                 TextField("", text: $editingTitle)
                     .font(titleFont)
                     .textFieldStyle(.plain)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .foregroundStyle(Color.Table.textPrimary)
                     .lineLimit(1)
                     .focused($isTitleFieldFocused)
@@ -188,9 +185,9 @@ struct HeaderTileView: View {
                 Text(node.title)
                     .font(titleFont)
                     .foregroundStyle(Color.Table.textPrimary)
-                    .lineLimit(isLeaf ? 2 : 1)
+                    .lineLimit(2)
                     .truncationMode(.tail)
-                    .minimumScaleFactor(0.8)
+                    .multilineTextAlignment(.leading)
                     .onTapGesture(count: 2) {
                         editingTitle = node.title
                         isEditing = true
@@ -198,7 +195,7 @@ struct HeaderTileView: View {
                     }
             }
         }
-        .frame(width: max(width - 16, 0), alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, effectiveTitleHorizontalPadding)
     }
 
@@ -312,31 +309,51 @@ struct HeaderTileView: View {
     }
 
     private var titleHorizontalPadding: CGFloat {
-        isLeaf ? 8 : leadingReservedWidth + 8
+        isLeaf ? 10 : 12
     }
 
     private var leafControlTopPadding: CGFloat {
-        leafIsCompact ? 4 : min(max(height * 0.08, 6), 12)
+        leafIsCompact ? 6 : min(max(height * 0.08, 8), 14)
     }
 
     private var leafControlRowHeight: CGFloat {
-        leafIsCompact ? 22 : min(max(height * 0.22, 24), 36)
+        leafIsCompact ? 24 : min(max(height * 0.24, 28), 40)
     }
 
     private var leafTitleHorizontalPadding: CGFloat {
-        leafIsCompact ? min(max(width * 0.08, 8), 14) : min(max(width * 0.10, 10), 18)
+        leafIsCompact ? min(max(width * 0.09, 10), 16) : min(max(width * 0.11, 12), 20)
     }
 
     private var leafTitleTopPadding: CGFloat {
-        leafIsCompact ? 4 : min(max(height * 0.07, 5), 12)
+        leafIsCompact ? 6 : min(max(height * 0.08, 7), 14)
     }
 
     private var leafTitleBottomPadding: CGFloat {
-        leafIsCompact ? 4 : min(max(height * 0.09, 6), 14)
+        leafIsCompact ? 6 : min(max(height * 0.10, 8), 16)
     }
 
     private var leafBottomSpacing: CGFloat {
-        leafIsCompact ? 2 : min(max(height * 0.08, 4), 12)
+        leafIsCompact ? 4 : min(max(height * 0.08, 6), 14)
+    }
+
+    private var groupedControlTopPadding: CGFloat {
+        min(max(height * 0.10, 8), 14)
+    }
+
+    private var groupedControlRowHeight: CGFloat {
+        min(max(height * 0.32, 28), 42)
+    }
+
+    private var groupedTitleHorizontalPadding: CGFloat {
+        min(max(width * 0.08, 12), 20)
+    }
+
+    private var groupedTitleTopPadding: CGFloat {
+        min(max(height * 0.08, 6), 12)
+    }
+
+    private var groupedTitleBottomPadding: CGFloat {
+        min(max(height * 0.12, 8), 16)
     }
 
     private var leafIsCompact: Bool {
@@ -352,17 +369,17 @@ struct HeaderTileView: View {
         var width: CGFloat = 0
 
         if !isRoot {
-            width += 24 + 6
+            width += 24 + 8
         }
 
         if parentIsCalculation {
-            width += 6 + 50
+            width += 8 + 54
         }
 
         if node.type == .calculation {
-            width += 6 + 26
+            width += 8 + 28
             if showWeightWarning {
-                width += 6 + 12
+                width += 8 + 14
             }
         }
 
@@ -428,19 +445,19 @@ struct HeaderTileView: View {
     private var titleFont: Font {
         if isLeaf {
             let size = leafIsCompact
-                ? min(max(height * 0.18, 11), 12.5)
-                : min(max(height * 0.15, 12.5), 15)
+                ? min(max(height * 0.20, 12), 13.5)
+                : min(max(height * 0.17, 13), 16)
             return .system(size: size, weight: .semibold)
         }
 
         let normalizedLevel = min(max(level, 0), 3)
         switch normalizedLevel {
         case 0:
-            return .system(size: 13, weight: .bold)
+            return .system(size: 15, weight: .bold)
         case 1:
-            return .system(size: 13, weight: .semibold)
+            return .system(size: 14, weight: .semibold)
         default:
-            return .system(size: 12, weight: .medium)
+            return .system(size: 13, weight: .medium)
         }
     }
 
@@ -449,5 +466,39 @@ struct HeaderTileView: View {
             return "\(Int(value))%"
         }
         return String(format: "%.2f%%", value)
+    }
+}
+struct HeaderTileGestureModifier: ViewModifier {
+    let gesturesEnabled: Bool
+    let isRoot: Bool
+    let dragProvider: () -> NSItemProvider
+    let onStartMove: () -> Void
+    let onDelete: () -> Void
+
+    func body(content: Content) -> some View {
+        if gesturesEnabled {
+            content
+                .onDrag {
+                    dragProvider()
+                }
+                .contextMenu {
+                    if !isRoot {
+                        Button {
+                            onStartMove()
+                        } label: {
+                            Label("Verschieben", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                        }
+                    }
+                    if !isRoot {
+                        Button(role: .destructive) {
+                            onDelete()
+                        } label: {
+                            Label("Löschen", systemImage: "trash")
+                        }
+                    }
+                }
+        } else {
+            content
+        }
     }
 }

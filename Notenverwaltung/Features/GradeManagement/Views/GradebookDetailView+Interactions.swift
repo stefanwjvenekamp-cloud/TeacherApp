@@ -49,6 +49,21 @@ extension GradebookDetailView {
         } message: {
             Text("Dieser Reiter wird dauerhaft gelöscht.")
         }
+        .modifier(
+            SelectedNodeActionsDialogModifier(
+                activeNodeID: Binding(
+                    get: { activeSelectedNodeActionsID },
+                    set: { activeSelectedNodeActionsID = $0 }
+                ),
+                movingNodeID: Binding(
+                    get: { viewModel.movingNodeID },
+                    set: { viewModel.movingNodeID = $0 }
+                ),
+                onDelete: { nodeID in
+                    requestDeleteNode(for: nodeID)
+                }
+            )
+        )
         .confirmationDialog("Schüler löschen?", isPresented: $vm.showDeleteStudentDialog, titleVisibility: .visible) {
             Button("Löschen", role: .destructive) {
                 guard let studentID = viewModel.pendingDeleteStudentID else { return }
@@ -166,13 +181,14 @@ extension GradebookDetailView {
                     }
 
                 AddStudentsPopup(
+                    schoolClass: schoolClass,
                     onAddSingle: {
                         viewModel.showAddStudentsPopup = false
                         viewModel.addStudentNameDraft = ""
                         viewModel.showAddStudentSheet = true
                     },
-                    onImportStudents: { names in
-                        viewModel.addStudents(names: names)
+                    onImportCommitted: {
+                        viewModel.refreshRows()
                     },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -550,4 +566,45 @@ extension GradebookDetailView {
     }
 
 
+}
+
+private struct SelectedNodeActionsDialogModifier: ViewModifier {
+    @Binding var activeNodeID: UUID?
+    @Binding var movingNodeID: UUID?
+    let onDelete: (UUID) -> Void
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { activeNodeID != nil },
+            set: { if !$0 { activeNodeID = nil } }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Bereichsaktionen",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            if let nodeID = activeNodeID {
+                Button("Verschieben beenden") {
+                    if movingNodeID == nodeID {
+                        movingNodeID = nil
+                    }
+                    activeNodeID = nil
+                }
+
+                Button("Löschen", role: .destructive) {
+                    onDelete(nodeID)
+                    activeNodeID = nil
+                }
+            }
+
+            Button("Abbrechen", role: .cancel) {
+                activeNodeID = nil
+            }
+        } message: {
+            Text("Aktionen für den ausgewählten Bereich.")
+        }
+    }
 }

@@ -10,17 +10,24 @@ extension GradebookDetailView {
     // MARK: - Leaf Columns
 
     private var leafColumns: [LeafColumnInfo] {
+        let initialDepth = viewModel.root.isTechnicalRoot ? -1 : 0
         var result: [LeafColumnInfo] = []
-        collectLeaves(node: viewModel.root, result: &result)
+        collectLeaves(node: viewModel.root, depth: initialDepth, result: &result)
         return result
     }
 
-    private func collectLeaves(node: GradeTileNode, result: inout [LeafColumnInfo]) {
+    private func collectLeaves(node: GradeTileNode, depth: Int, result: inout [LeafColumnInfo]) {
         if visibleColumnIDs.contains(node.id) {
-            result.append(LeafColumnInfo(nodeID: node.id, width: width(for: node.id)))
+            result.append(LeafColumnInfo(
+                nodeID: node.id,
+                width: width(for: node.id),
+                type: node.type,
+                node: node,
+                depth: depth
+            ))
         }
         for child in node.children {
-            collectLeaves(node: child, result: &result)
+            collectLeaves(node: child, depth: depth + 1, result: &result)
         }
     }
 
@@ -32,18 +39,6 @@ extension GradebookDetailView {
 
     func containerColorOwner(for node: GradeTileNode) -> GradeTileNode? {
         node.colorStyle == .automatic ? nil : node
-    }
-
-    func dataColorOwner(for leafNodeID: UUID) -> GradeTileNode? {
-        guard visibleColumnIDs.contains(leafNodeID) else {
-            return nil
-        }
-
-        guard let node = GradeTileTree.findNode(in: viewModel.root, id: leafNodeID) else {
-            return nil
-        }
-
-        return node.colorStyle == .automatic ? nil : node
     }
 
     func containerBackground(for node: GradeTileNode, level: Int) -> Color {
@@ -124,11 +119,10 @@ extension GradebookDetailView {
             ForEach(viewModel.rows) { row in
                 HStack(spacing: 0) {
                     ForEach(leaves, id: \.nodeID) { leaf in
-                        let column = columns.first(where: { $0.nodeID == leaf.nodeID })
-                        if column?.type == .input {
-                            inputCell(rowID: row.id, nodeID: leaf.nodeID)
+                        if leaf.type == .input {
+                            inputCell(rowID: row.id, leaf: leaf)
                         } else {
-                            calculatedCell(row: row, nodeID: leaf.nodeID)
+                            calculatedCell(row: row, leaf: leaf)
                         }
                     }
                 }
@@ -140,8 +134,8 @@ extension GradebookDetailView {
 
     // MARK: - Cells
 
-    private func inputCell(rowID: UUID, nodeID: UUID) -> some View {
-        let displayValue = viewModel.inputValue(rowID: rowID, nodeID: nodeID)
+    private func inputCell(rowID: UUID, leaf: LeafColumnInfo) -> some View {
+        let displayValue = viewModel.inputValue(rowID: rowID, nodeID: leaf.nodeID)
 
         return ZStack {
             if let option = EmojiOption.fromStoredValue(displayValue) {
@@ -155,21 +149,21 @@ extension GradebookDetailView {
                     .foregroundStyle(Color.Table.textPrimary)
             }
         }
-        .frame(width: width(for: nodeID), height: cellHeight)
-        .background(columnBackground(for: nodeID, isCalculated: false))
+        .frame(width: leaf.width, height: cellHeight)
+        .background(columnBackground(for: leaf, isCalculated: false))
         .overlay(cellBorder)
         .overlay(alignment: .trailing) {
-            columnDivider(for: nodeID, isCalculated: false)
+            columnDivider(depth: leaf.depth, isCalculated: false)
         }
         .contentShape(Rectangle())
         .onTapGesture {
             viewModel.inputPopupDraft = displayValue
             viewModel.inputPopupCategory = .numbers
-            viewModel.activeInputCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
+            viewModel.activeInputCell = GradeInputCellTarget(rowID: rowID, nodeID: leaf.nodeID)
         }
         .contextMenu {
             Button(role: .destructive) {
-                viewModel.pendingClearCell = GradeInputCellTarget(rowID: rowID, nodeID: nodeID)
+                viewModel.pendingClearCell = GradeInputCellTarget(rowID: rowID, nodeID: leaf.nodeID)
                 viewModel.showClearCellDialog = true
             } label: {
                 Label("Zelle leeren", systemImage: "trash")
@@ -177,21 +171,18 @@ extension GradebookDetailView {
         }
     }
 
-    private func calculatedCell(row: StudentGradeRow, nodeID: UUID) -> some View {
-        let value = GradeTileTree.findNode(in: viewModel.root, id: nodeID).flatMap {
-            GradeTileTree.calculateValue(for: $0, row: row, roundingDecimals: viewModel.roundingDecimals)
-        }
-
+    private func calculatedCell(row: StudentGradeRow, leaf: LeafColumnInfo) -> some View {
+        let value = GradeTileTree.calculateValue(for: leaf.node, row: row, roundingDecimals: viewModel.roundingDecimals)
         let text = value.map { String(format: "%0.2f", $0) } ?? "—"
 
         return Text(text)
             .font(.system(size: 13, weight: .semibold, design: .monospaced))
             .foregroundStyle(Color.Table.textSecondary)
-            .frame(width: width(for: nodeID), height: cellHeight)
-            .background(columnBackground(for: nodeID, isCalculated: true))
+            .frame(width: leaf.width, height: cellHeight)
+            .background(columnBackground(for: leaf, isCalculated: true))
             .overlay(cellBorder)
             .overlay(alignment: .trailing) {
-                columnDivider(for: nodeID, isCalculated: true)
+                columnDivider(depth: leaf.depth, isCalculated: true)
             }
     }
 
@@ -199,14 +190,12 @@ extension GradebookDetailView {
         Rectangle().strokeBorder(Color.Table.border.opacity(0.9), lineWidth: 0.9)
     }
 
-    @ViewBuilder
-    private func columnDivider(for nodeID: UUID, isCalculated: Bool) -> some View {
-        let depth = nodeDepth(for: nodeID)
+    private func columnDivider(depth: Int, isCalculated: Bool) -> some View {
         let baseOpacity: Double = isCalculated ? 0.42 : 0.26
         let depthBoost = max(0.0, 0.12 - Double(min(depth, 3)) * 0.03)
         let lineWidth: CGFloat = isCalculated ? 1.4 : 1.0
 
-        Rectangle()
+        return Rectangle()
             .fill(Color.Table.textSecondary.opacity(baseOpacity + depthBoost))
             .frame(width: lineWidth)
     }
@@ -218,10 +207,10 @@ extension GradebookDetailView {
         return 1 + (node.children.map(depth(of:)).max() ?? 0)
     }
     
-    private func columnBackground(for nodeID: UUID, isCalculated: Bool) -> Color {
-        let depth = nodeDepth(for: nodeID)
-        let normalizedDepth = min(max(depth, 0), 4)
-        let style = dataColorOwner(for: nodeID)?.colorStyle ?? .automatic
+    /// Optimized overload using pre-computed leaf info (avoids tree lookups per cell).
+    private func columnBackground(for leaf: LeafColumnInfo, isCalculated: Bool) -> Color {
+        let normalizedDepth = min(max(leaf.depth, 0), 4)
+        let style = leaf.node.colorStyle
 
         if style != .automatic {
             let tintedBackground = columnTintColor(for: style, isCalculated: isCalculated)
@@ -275,87 +264,61 @@ extension GradebookDetailView {
         }
     }
 
-    private func nodeDepth(for nodeID: UUID) -> Int {
-        let initialDepth = viewModel.root.isTechnicalRoot ? -1 : 0
-        return nodeDepth(in: viewModel.root, targetID: nodeID, currentDepth: initialDepth) ?? 0
-    }
-
-    private func nodeDepth(in node: GradeTileNode, targetID: UUID, currentDepth: Int) -> Int? {
-        if node.id == targetID {
-            return currentDepth
-        }
-
-        for child in node.children {
-            if let foundDepth = nodeDepth(in: child, targetID: targetID, currentDepth: currentDepth + 1) {
-                return foundDepth
-            }
-        }
-
-        return nil
-    }
-    
     func width(for nodeID: UUID) -> CGFloat {
         viewModel.columnWidths[nodeID] ?? preferredWidth(for: nodeID)
     }
 
     private func preferredWidth(for nodeID: UUID) -> CGFloat {
-        guard let node = GradeTileTree.findNode(in: viewModel.root, id: nodeID) else {
-            return defaultColumnWidth
+        let presets = presetWidths
+        // Check column type from the columns list. Input columns are leaves, calculation columns are areas.
+        let colType = viewModel.inputNodeIDs.contains(nodeID) ? GradeTileType.input : GradeTileType.calculation
+        return colType == .input ? presets.leaf : presets.area
+    }
+
+    /// Computes both leaf and area preset widths in a single tree traversal.
+    private var presetWidths: (leaf: CGFloat, area: CGFloat) {
+        var leafNodes: [GradeTileNode] = []
+        var areaNodes: [GradeTileNode] = []
+        collectVisibleNodesSplit(in: viewModel.root, leaves: &leafNodes, areas: &areaNodes)
+
+        let leafWidth: CGFloat
+        if leafNodes.isEmpty {
+            leafWidth = defaultColumnWidth
+        } else {
+            let measuredTitleWidth = leafNodes
+                .map(\.title)
+                .map(measuredLeafTitleWidth(for:))
+                .max() ?? defaultColumnWidth
+            let requiredWidth = measuredTitleWidth + 40
+            leafWidth = max(requiredWidth, max(minColumnWidth, 124))
         }
 
-        if node.children.isEmpty {
-            return uniformLeafPresetWidth
+        let areaWidth: CGFloat
+        if areaNodes.isEmpty {
+            areaWidth = defaultColumnWidth
+        } else {
+            let requiredWidth = areaNodes.map(requiredAreaWidth(for:)).max() ?? defaultColumnWidth
+            areaWidth = max(requiredWidth, 156)
         }
 
-        return uniformAreaPresetWidth
+        return (leafWidth, areaWidth)
     }
 
-    private var uniformLeafPresetWidth: CGFloat {
-        let leafNodes = visibleLeafNodes
-        guard !leafNodes.isEmpty else {
-            return defaultColumnWidth
-        }
-
-        let measuredTitleWidth = leafNodes
-            .map(\.title)
-            .map(measuredLeafTitleWidth(for:))
-            .max() ?? defaultColumnWidth
-
-        let requiredWidth = measuredTitleWidth + 24
-        return max(requiredWidth, minColumnWidth)
-    }
-
-    private var uniformAreaPresetWidth: CGFloat {
-        let areaNodes = visibleAreaNodes
-        guard !areaNodes.isEmpty else {
-            return defaultColumnWidth
-        }
-
-        let requiredWidth = areaNodes.map(requiredAreaWidth(for:)).max() ?? defaultColumnWidth
-        return max(requiredWidth, minColumnWidth)
-    }
-
-    private var visibleLeafNodes: [GradeTileNode] {
-        flattenedVisibleNodes.filter { $0.children.isEmpty }
-    }
-
-    private var visibleAreaNodes: [GradeTileNode] {
-        flattenedVisibleNodes.filter { !$0.children.isEmpty }
-    }
-
-    private var flattenedVisibleNodes: [GradeTileNode] {
-        collectVisibleNodes(in: viewModel.root)
-    }
-
-    private func collectVisibleNodes(in node: GradeTileNode) -> [GradeTileNode] {
-        var nodes: [GradeTileNode] = []
+    private func collectVisibleNodesSplit(
+        in node: GradeTileNode,
+        leaves: inout [GradeTileNode],
+        areas: inout [GradeTileNode]
+    ) {
         if visibleColumnIDs.contains(node.id) {
-            nodes.append(node)
+            if node.children.isEmpty {
+                leaves.append(node)
+            } else {
+                areas.append(node)
+            }
         }
         for child in node.children {
-            nodes.append(contentsOf: collectVisibleNodes(in: child))
+            collectVisibleNodesSplit(in: child, leaves: &leaves, areas: &areas)
         }
-        return nodes
     }
 
     private func measuredLeafTitleWidth(for rawTitle: String) -> CGFloat {
@@ -382,20 +345,42 @@ extension GradebookDetailView {
         var leadingControlsWidth: CGFloat = 0
 
         if !node.isTechnicalRoot {
-            leadingControlsWidth += 24 + 6
+            leadingControlsWidth += 24 + 8
         }
 
         if parentIsCalculation {
-            leadingControlsWidth += measuredWeightLabelWidth(for: node.weightPercent) + 8
+            leadingControlsWidth += measuredWeightLabelWidth(for: node.weightPercent) + 12
         }
 
         if node.type == .calculation {
-            leadingControlsWidth += 26 + 6 + 26
+            leadingControlsWidth += 28 + 8 + 28
         } else {
-            leadingControlsWidth += 26
+            leadingControlsWidth += 28
         }
 
-        return leadingControlsWidth + 20
+        let titleWidth = measuredAreaTitleWidth(for: node.title)
+        let contentWidth = max(titleWidth + 28, leadingControlsWidth + 24)
+        return max(contentWidth, 156)
+    }
+
+    private func measuredAreaTitleWidth(for rawTitle: String) -> CGFloat {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            return 96
+        }
+
+        #if canImport(UIKit)
+        let font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        let measuredTextWidth = (title as NSString).size(withAttributes: [.font: font]).width
+        #elseif canImport(AppKit)
+        let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        let measuredTextWidth = (title as NSString).size(withAttributes: [.font: font]).width
+        #else
+        let measuredTextWidth = CGFloat(title.count) * 8.5
+        #endif
+
+        // Two lines are now allowed, but area tiles should still remain comfortably readable.
+        return min(max(measuredTextWidth * 0.7, 96), 220)
     }
 
     private func measuredWeightLabelWidth(for value: Double) -> CGFloat {

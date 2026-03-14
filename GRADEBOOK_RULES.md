@@ -12,6 +12,23 @@ It is a **tree of weighted aggregations rendered as a table projection**.
 
 The table is only a visual projection of the tree structure.
 
+Important clarification:
+
+The gradebook is not only a tree of columns.
+It also has a row context based on enrolled students.
+
+Current domain chain:
+
+Student
+   │
+ClassEnrollment
+   │
+SchoolClass
+   │
+GradebookRowEntity
+   │
+GradeEntry
+
 
 ------------------------------------------------------------
 CORE CONCEPT
@@ -32,6 +49,7 @@ Important principle:
 
 - the tree is the source of truth
 - the grid is only a projection of that tree
+- row context is derived from enrolled students, not from display names
 
 
 ------------------------------------------------------------
@@ -107,6 +125,27 @@ This is a core semantic rule of the current project.
 
 
 ------------------------------------------------------------
+ROW CONTEXT
+------------------------------------------------------------
+
+Rows in the visible table are context-bound.
+
+Rules:
+
+- a visible row belongs to a `GradebookRowEntity`
+- a `GradebookRowEntity` belongs to a `ClassEnrollment`
+- a `ClassEnrollment` belongs to exactly one `Student` and one `SchoolClass`
+- the gradebook must not treat a row as a free-floating person record
+
+Important consequence:
+
+- the visible student name in the table is a projection of
+  `GradebookRowEntity -> ClassEnrollment -> Student`
+- class context must come from the enrollment, not from the name
+- UI may still use `studentID` as a derived identifier, but row ownership remains enrollment-based
+
+
+------------------------------------------------------------
 HEADER PROJECTION
 ------------------------------------------------------------
 
@@ -148,6 +187,12 @@ Practical consequence:
 
 If a cell belongs to node `X`,
 then only node `X` may own that cell.
+
+Additional context rule:
+
+- a data cell also belongs to exactly one row context
+- a row context must remain attached to the correct enrollment
+- no cell may survive detached from both its node owner and its row owner
 
 
 ------------------------------------------------------------
@@ -229,6 +274,7 @@ Important rule:
 
 - node type affects calculation behavior
 - node type must not change column ownership rules
+- node type must not change row ownership rules
 
 
 ------------------------------------------------------------
@@ -258,6 +304,40 @@ Structural mutations must preserve:
 - tree invariants
 - column ownership
 - calculation semantics
+- row-to-enrollment consistency
+
+
+------------------------------------------------------------
+IDENTITY SAFETY
+------------------------------------------------------------
+
+The gradebook must never infer person identity from the visible name alone.
+
+Rules:
+
+- names are display values, not identity keys
+- equal names do not imply equal students
+- rows must not be merged automatically because two names look equal
+- enrollment context must remain explicit and stable
+
+
+------------------------------------------------------------
+IMPORT SAFETY
+------------------------------------------------------------
+
+CSV import may feed the gradebook, but import semantics must remain explicit.
+
+Rules:
+
+- import matching may suggest existing students
+- import matching must not silently decide identity
+- review and resolution happen before commit
+- committed rows must still be created through valid enrollment context
+
+Practical consequence:
+
+- the gradebook table only shows committed rows
+- import candidates and match suggestions are not gradebook rows
 - persisted identity
 
 
