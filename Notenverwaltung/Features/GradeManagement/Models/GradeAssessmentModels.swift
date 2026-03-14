@@ -85,26 +85,37 @@ final class GradeComment {
 final class GradeEntry {
     var id: UUID
     var assessmentId: UUID?
+    // Legacy compatibility field. Prefer `resolvedStudentID` from `gradebookRow`.
     var studentId: UUID
+    // A grade entry belongs to the concrete row context in which it was recorded.
+    var gradebookRow: GradebookRowEntity?
     var semesterId: String
     var categoryKey: String
     var rawValue: String
     var value: Double?
 
     init(
+        gradebookRow: GradebookRowEntity,
         assessmentId: UUID? = nil,
-        studentId: UUID,
         semesterId: String,
         categoryKey: String,
         rawValue: String = "",
         value: Double? = nil
     ) {
+        guard let studentID = gradebookRow.classEnrollment?.student?.id else {
+            preconditionFailure("GradeEntry requires a GradebookRow with a valid enrollment and student.")
+        }
         self.id = UUID()
         self.assessmentId = assessmentId
-        self.studentId = studentId
+        self.gradebookRow = gradebookRow
+        self.studentId = studentID
         self.semesterId = semesterId
         self.categoryKey = categoryKey
         self.rawValue = rawValue
         self.value = value
+    }
+
+    var resolvedStudentID: UUID? {
+        gradebookRow?.classEnrollment?.student?.id ?? studentId
     }
 }

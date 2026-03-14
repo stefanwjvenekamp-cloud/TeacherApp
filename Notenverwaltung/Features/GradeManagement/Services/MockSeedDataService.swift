@@ -30,13 +30,14 @@ enum MockSeedDataService {
             // Create students
             for (index, fullName) in config.students.enumerated() {
                 let (firstName, lastName) = GradebookStudentService.splitName(fullName)
-                let student = Student(
-                    firstName: firstName,
-                    lastName: lastName,
+                let student = Student(firstName: firstName, lastName: lastName)
+                context.insert(student)
+                _ = GradebookRepository.enrollment(
+                    for: student,
                     studentNumber: index + 1,
-                    classId: schoolClass.id
+                    in: schoolClass,
+                    context: context
                 )
-                schoolClass.students.append(student)
             }
 
             // Create default tab with standard tree
@@ -54,12 +55,13 @@ enum MockSeedDataService {
             context.insert(rootEntity)
 
             // Create rows for each student
-            for student in schoolClass.students {
+            let sortedEnrollments = schoolClass.enrollments
+                .sorted { ($0.studentNumber ?? 0) < ($1.studentNumber ?? 0) }
+            for enrollment in sortedEnrollments {
                 let row = GradebookRowEntity(
-                    id: student.id,
-                    sortOrder: student.studentNumber - 1,
+                    sortOrder: (enrollment.studentNumber ?? 1) - 1,
                     tab: tab,
-                    student: student
+                    classEnrollment: enrollment
                 )
                 context.insert(row)
             }

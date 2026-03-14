@@ -354,7 +354,7 @@ enum GradebookNodeService {
         )
         GradebookRepository.ensureCellValues(
             for: tab,
-            rowIDs: GradebookRepository.rows(for: tab).map(\.id),
+            rowIDs: GradebookRepository.rows(for: tab).compactMap(\.resolvedStudentID),
             nodeIDs: validInputIDs,
             context: context
         )
@@ -370,10 +370,11 @@ enum GradebookNodeService {
 
         var result: [UUID: [UUID: String]] = [:]
         for row in GradebookRepository.rows(for: tab) {
+            guard let studentID = row.resolvedStudentID else { continue }
             let preservedValues = GradebookRepository.cellValues(for: row)
                 .filter { movedInputNodeIDs.contains($0.key) }
             if !preservedValues.isEmpty {
-                result[row.id] = preservedValues
+                result[studentID] = preservedValues
             }
         }
         return result

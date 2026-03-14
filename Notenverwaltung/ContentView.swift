@@ -254,9 +254,9 @@ struct PlanungView: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: [SchoolClass.self, GradebookTabEntity.self, GradebookNodeEntity.self, GradebookRowEntity.self, GradebookCellValueEntity.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
+        .modelContainer(for: [SchoolClass.self, ClassEnrollment.self, GradebookTabEntity.self, GradebookNodeEntity.self, GradebookRowEntity.self, GradebookCellValueEntity.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
 }
 #Preview("Übersicht") {
     ÜbersichtView()
-        .modelContainer(for: [SchoolClass.self, GradebookTabEntity.self, GradebookNodeEntity.self, GradebookRowEntity.self, GradebookCellValueEntity.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
+        .modelContainer(for: [SchoolClass.self, ClassEnrollment.self, GradebookTabEntity.self, GradebookNodeEntity.self, GradebookRowEntity.self, GradebookCellValueEntity.self, Student.self, GradeEntry.self, Assessment.self, GradeComment.self, GradebookSnapshot.self], inMemory: true)
 }

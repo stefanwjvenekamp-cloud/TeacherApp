@@ -79,12 +79,18 @@ private enum GradebookDetailPreviewFactory {
         context.insert(schoolClass)
 
         let students: [Student] = [
-            Student(firstName: "Anna", lastName: "Meyer", studentNumber: 1, classId: schoolClass.id),
-            Student(firstName: "Ben", lastName: "Schulz", studentNumber: 2, classId: schoolClass.id),
-            Student(firstName: "Clara", lastName: "Becker", studentNumber: 3, classId: schoolClass.id)
+            Student(firstName: "Anna", lastName: "Meyer"),
+            Student(firstName: "Ben", lastName: "Schulz"),
+            Student(firstName: "Clara", lastName: "Becker")
         ]
-        for student in students {
-            schoolClass.students.append(student)
+        for (index, student) in students.enumerated() {
+            context.insert(student)
+            _ = GradebookRepository.enrollment(
+                for: student,
+                studentNumber: index + 1,
+                in: schoolClass,
+                context: context
+            )
         }
 
         let tab = GradebookTabEntity(
@@ -97,12 +103,11 @@ private enum GradebookDetailPreviewFactory {
 
         GradebookRepository.replaceNodeTree(for: tab, root: root, in: context)
 
-        for student in students {
+        for enrollment in schoolClass.enrollments.sorted(by: { ($0.studentNumber ?? 0) < ($1.studentNumber ?? 0) }) {
             let row = GradebookRowEntity(
-                id: student.id,
-                sortOrder: student.studentNumber - 1,
+                sortOrder: (enrollment.studentNumber ?? 1) - 1,
                 tab: tab,
-                student: student
+                classEnrollment: enrollment
             )
             context.insert(row)
         }

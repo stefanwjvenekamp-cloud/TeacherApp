@@ -166,13 +166,14 @@ extension GradebookDetailView {
                     }
 
                 AddStudentsPopup(
+                    schoolClass: schoolClass,
                     onAddSingle: {
                         viewModel.showAddStudentsPopup = false
                         viewModel.addStudentNameDraft = ""
                         viewModel.showAddStudentSheet = true
                     },
-                    onImportStudents: { names in
-                        viewModel.addStudents(names: names)
+                    onImportCommitted: {
+                        viewModel.refreshRows()
                     },
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.2)) {

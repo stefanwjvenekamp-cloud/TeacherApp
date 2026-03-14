@@ -147,10 +147,10 @@ struct ClassGradebooksDetailView: View {
 
     private func renameSemesterId(from oldValue: String, to newValue: String) {
         guard !oldValue.isEmpty, !newValue.isEmpty else { return }
-        let studentIDs = Set(schoolClass.students.map(\.id))
+        let studentIDs = Set(schoolClass.enrollments.compactMap(\.student?.id))
         let descriptor = FetchDescriptor<GradeEntry>()
         let entries = (try? modelContext.fetch(descriptor)) ?? []
-        for entry in entries where studentIDs.contains(entry.studentId) && entry.semesterId == oldValue {
+        for entry in entries where studentIDs.contains(entry.resolvedStudentID ?? entry.studentId) && entry.semesterId == oldValue {
             entry.semesterId = newValue
         }
     }
@@ -314,4 +314,3 @@ struct ClassGradebooksDetailView: View {
         showDeleteDialog = true
     }
 }
-

@@ -31,7 +31,7 @@ struct GradeBookMainView: View {
                     } label: {
                         ClassCard(
                             schoolClass: schoolClass,
-                            studentCount: schoolClass.students.count
+                            studentCount: schoolClass.enrollments.filter(\.isActive).count
                         )
                     }
                     .listRowInsets(EdgeInsets(top: 8, leading: 24, bottom: 8, trailing: 24))
@@ -115,6 +115,7 @@ private struct ClassGradebooksDetailContainer: View {
     .modelContainer(
         for: [
             SchoolClass.self,
+            ClassEnrollment.self,
             GradebookTabEntity.self,
             GradebookNodeEntity.self,
             GradebookRowEntity.self,
