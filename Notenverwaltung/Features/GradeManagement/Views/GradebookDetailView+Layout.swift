@@ -78,7 +78,24 @@ extension GradebookDetailView {
             )
     }
 
+    @ViewBuilder
     private var stickyGridHeaderViewport: some View {
+        #if os(iOS)
+        SyncedHorizontalScrollView(
+            showsHorizontalScrollIndicator: false,
+            syncCoordinator: viewModel.scrollSyncCoordinator,
+            externalOffset: viewModel.horizontalScrollOffset,
+            onOffsetChange: { viewModel.horizontalScrollOffset = $0 }
+        ) {
+            scaledTableSection(
+                baseWidth: totalColumnsWidth,
+                baseHeight: headerHeight
+            ) {
+                gridHeaderView
+            }
+        }
+        .frame(height: headerHeight * viewModel.zoomScale, alignment: .topLeading)
+        #else
         GeometryReader { geometry in
             scaledTableSection(
                 baseWidth: totalColumnsWidth,
@@ -91,6 +108,7 @@ extension GradebookDetailView {
             .clipped()
         }
         .frame(height: headerHeight * viewModel.zoomScale)
+        #endif
     }
 
     private var stickyTableHeaderRow: some View {
@@ -111,6 +129,8 @@ extension GradebookDetailView {
         #if os(iOS)
         SyncedHorizontalScrollView(
             showsHorizontalScrollIndicator: false,
+            syncCoordinator: viewModel.scrollSyncCoordinator,
+            externalOffset: viewModel.horizontalScrollOffset,
             onOffsetChange: { viewModel.horizontalScrollOffset = $0 }
         ) {
             scaledTableSection(

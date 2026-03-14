@@ -216,6 +216,17 @@ enum GradebookRepository {
             schoolClass: schoolClass
         )
         context.insert(tab)
+
+        // Create rows for all active enrollments so the student list is consistent across tabs.
+        for (index, enrollment) in activeEnrollments(for: schoolClass).enumerated() {
+            let row = GradebookRowEntity(
+                sortOrder: index,
+                tab: tab,
+                classEnrollment: enrollment
+            )
+            context.insert(row)
+        }
+
         try? context.save()
         return tab
     }

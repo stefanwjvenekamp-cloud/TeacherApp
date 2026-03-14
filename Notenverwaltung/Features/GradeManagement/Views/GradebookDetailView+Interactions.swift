@@ -304,8 +304,8 @@ extension GradebookDetailView {
     var nameColumnRows: some View {
         ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
-                ForEach(viewModel.rows) { row in
-                    studentRowView(for: row)
+                ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
+                    studentRowView(for: row, number: index + 1)
                 }
 
                 Button {
@@ -334,67 +334,81 @@ extension GradebookDetailView {
     }
 
     @ViewBuilder
-    private func studentRowView(for row: StudentGradeRow) -> some View {
+    private func studentRowView(for row: StudentGradeRow, number: Int) -> some View {
         let isEditing = viewModel.editingStudentID == row.id
         let isMoving = viewModel.movingStudentID == row.id
 
         Group {
             if isEditing {
-                TextField("", text: studentNameBinding(for: row.id), prompt: Text("Name"))
-                    .textFieldStyle(.plain)
-                    .focused($focusedStudentID, equals: row.id)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.Table.textPrimary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .frame(width: nameColumnWidth - 12, height: cellHeight - 6, alignment: .leading)
-                    .background(Color.Table.cellBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(Color.blue, lineWidth: 1)
-                    }
-                    .onSubmit {
-                        endStudentEditing(commit: true)
-                    }
-            } else {
-                Text(row.studentName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.Table.textPrimary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .frame(width: nameColumnWidth - 12, height: cellHeight - 6, alignment: .leading)
-                    .background(Color.Table.cellBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(
-                                isMoving ? Color.Theme.primaryBlue.opacity(0.9) : Color.Table.border,
-                                lineWidth: isMoving ? 2 : 0.8
-                            )
-                    }
-                    .background {
-                        if isMoving {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.Theme.lightBlue.opacity(0.16),
-                                            Color.Theme.primaryBlue.opacity(0.05)
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .shadow(color: Color.Theme.primaryBlue.opacity(0.12), radius: 10, y: 3)
+                HStack(spacing: 0) {
+                    Text("\(number)")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.Table.textSecondary)
+                        .frame(width: 28, alignment: .center)
+
+                    TextField("", text: studentNameBinding(for: row.id), prompt: Text("Name"))
+                        .textFieldStyle(.plain)
+                        .focused($focusedStudentID, equals: row.id)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.Table.textPrimary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onSubmit {
+                            endStudentEditing(commit: true)
                         }
+                }
+                .padding(.trailing, 10)
+                .frame(width: nameColumnWidth - 12, height: cellHeight - 6, alignment: .leading)
+                .background(Color.Table.cellBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.blue, lineWidth: 1)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    Text("\(number)")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.Table.textSecondary)
+                        .frame(width: 28, alignment: .center)
+
+                    Text(row.studentName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.Table.textPrimary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.trailing, 10)
+                .frame(width: nameColumnWidth - 12, height: cellHeight - 6, alignment: .leading)
+                .background(Color.Table.cellBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(
+                            isMoving ? Color.Theme.primaryBlue.opacity(0.9) : Color.Table.border,
+                            lineWidth: isMoving ? 2 : 0.8
+                        )
+                }
+                .background {
+                    if isMoving {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.Theme.lightBlue.opacity(0.16),
+                                        Color.Theme.primaryBlue.opacity(0.05)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .shadow(color: Color.Theme.primaryBlue.opacity(0.12), radius: 10, y: 3)
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        beginStudentEditing(row.id)
-                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    beginStudentEditing(row.id)
+                }
             }
         }
         .frame(width: nameColumnWidth, height: cellHeight)

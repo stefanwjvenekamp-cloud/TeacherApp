@@ -12,6 +12,8 @@ struct FloatingTileSettingsPanel: View {
 
     @State private var titleText: String
     @State private var colorStyle: GradeTileColorStyle
+    @State private var draftColumnWidth: CGFloat
+    @State private var didRequestAutoDistribute = false
     @State private var panelOffset: CGSize = .zero
     @GestureState private var dragOffset: CGSize = .zero
     @GestureState private var isDraggingPanel = false
@@ -36,6 +38,7 @@ struct FloatingTileSettingsPanel: View {
         self.onClose = onClose
         _titleText = State(initialValue: node.title)
         _colorStyle = State(initialValue: node.colorStyle)
+        _draftColumnWidth = State(initialValue: columnWidth.wrappedValue)
     }
 
     var body: some View {
@@ -47,21 +50,31 @@ struct FloatingTileSettingsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     sectionView(title: "Titel") {
-                        TextField("Titel", text: $titleText)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit {
-                                onSave(titleText, colorStyle)
+                        HStack(spacing: 6) {
+                            TextField("Titel", text: $titleText)
+                                .textFieldStyle(.roundedBorder)
+
+                            if !titleText.isEmpty {
+                                Button {
+                                    titleText = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 16))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.plain)
                             }
+                        }
                     }
                     
                     if showColumnWidthSlider {
                         sectionView(title: "Spaltenbreite") {
                             HStack {
-                                Text("\(Int(columnWidth)) pt")
+                                Text("\(Int(draftColumnWidth)) pt")
                                     .font(.system(size: 13, design: .monospaced))
                                     .foregroundStyle(.secondary)
                                     .frame(width: 50, alignment: .trailing)
-                                Slider(value: $columnWidth, in: minColumnWidth...maxColumnWidth, step: 5)
+                                Slider(value: $draftColumnWidth, in: minColumnWidth...maxColumnWidth, step: 5)
                             }
                         }
                     }
@@ -71,7 +84,6 @@ struct FloatingTileSettingsPanel: View {
                             ForEach(GradeTileColorStyle.allCases, id: \.self) { style in
                                 Button {
                                     colorStyle = style
-                                    onSave(titleText, colorStyle)
                                 } label: {
                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                                         .fill(colorPreview(for: style))
@@ -91,7 +103,7 @@ struct FloatingTileSettingsPanel: View {
                     if node.type == .calculation && !node.children.isEmpty {
                         sectionView(title: "Gewichtung") {
                             Button {
-                                onAutoDistribute()
+                                didRequestAutoDistribute = true
                             } label: {
                                 Text("Gleichverteilen")
                                     .font(.system(size: 13, weight: .medium))
@@ -101,7 +113,7 @@ struct FloatingTileSettingsPanel: View {
                     }
                     
                     Button {
-                        onSave(titleText, colorStyle)
+                        commitChanges()
                         onClose()
                     } label: {
                         Text("Sichern & Schließen")
@@ -133,7 +145,7 @@ struct FloatingTileSettingsPanel: View {
             .highPriorityGesture(panelDragGesture)
 
             Button {
-                onSave(titleText, colorStyle)
+                commitChanges()
                 onClose()
             } label: {
                 Image(systemName: "xmark.circle.fill")
@@ -159,6 +171,16 @@ struct FloatingTileSettingsPanel: View {
                 panelOffset.width += value.translation.width
                 panelOffset.height += value.translation.height
             }
+    }
+
+    private func commitChanges() {
+        onSave(titleText, colorStyle)
+        if showColumnWidthSlider {
+            columnWidth = draftColumnWidth
+        }
+        if didRequestAutoDistribute {
+            onAutoDistribute()
+        }
     }
 
     private func sectionView<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {

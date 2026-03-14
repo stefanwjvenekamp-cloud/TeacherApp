@@ -29,6 +29,7 @@ struct HeaderTileView: View {
     let dragProvider: () -> NSItemProvider
     
     @State private var showCustomWeightSheet = false
+    @State private var showWeightPopover = false
     @State private var customWeightText = ""
     @State private var isEditing = false
     @State private var editingTitle = ""
@@ -217,29 +218,41 @@ struct HeaderTileView: View {
             }
 
             if parentIsCalculation {
-                Menu {
-                    ForEach(WeightOption.availableWeights) { option in
-                        Button(option.label) {
-                            onWeightChange(option.value)
-                        }
-                    }
-                    Divider()
-                    Button("Eigene Eingabe…") {
-                        customWeightText = String(format: "%.2f", node.weightPercent).replacingOccurrences(of: ".00", with: "")
-                        showCustomWeightSheet = true
-                    }
+                Button {
+                    showWeightPopover = true
                 } label: {
-                    Text(weightLabel(node.weightPercent))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Color.Table.border, lineWidth: 0.8)
+                    HStack(spacing: 3) {
+                        Text(weightLabel(node.weightPercent))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(Color.accentColor.opacity(0.25), lineWidth: 0.5)
+                    }
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showWeightPopover) {
+                    WeightPickerPopover(
+                        currentWeight: node.weightPercent,
+                        onSelect: { value in
+                            onWeightChange(value)
+                            showWeightPopover = false
+                        },
+                        onCustomInput: {
+                            showWeightPopover = false
+                            customWeightText = String(format: "%.2f", node.weightPercent)
+                                .replacingOccurrences(of: ".00", with: "")
+                            showCustomWeightSheet = true
                         }
+                    )
                 }
             }
 
@@ -502,3 +515,95 @@ struct HeaderTileGestureModifier: ViewModifier {
         }
     }
 }
+
+// MARK: - Weight Picker Popover
+struct WeightPickerPopover: View {
+    let currentWeight: Double
+    let onSelect: (Double) -> Void
+    let onCustomInput: () -> Void
+
+    private let presetWeights: [Double] = [0, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 100]
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 4)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Text("Gewichtung")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(formatWeight(currentWeight))
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            // Preset grid
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(presetWeights, id: \.self) { weight in
+                    let isSelected = abs(currentWeight - weight) < 0.01
+                    Button {
+                        onSelect(weight)
+                    } label: {
+                        Text("\(Int(weight))%")
+                            .font(.system(size: 13, weight: isSelected ? .bold : .regular, design: .rounded))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .foregroundStyle(isSelected ? .white : .primary)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(isSelected ? Color.accentColor : Color(.systemGray5))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            // Custom input row
+            Button {
+                onCustomInput()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "number")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text("Eigene Eingabe…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(width: 250)
+        .background(Color(.systemBackground))
+    }
+
+    private func formatWeight(_ value: Double) -> String {
+        if value.rounded() == value {
+            return "\(Int(value))%"
+        }
+        return String(format: "%.2f%%", value)
+    }
+}
+
+

@@ -20,39 +20,44 @@ struct GradeInputPopup: View {
     @State private var panelOffset: CGSize = .zero
     @GestureState private var dragOffset: CGSize = .zero
     @GestureState private var isDraggingPopup = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 0) {
             header
-            inputPreview
-            categorySwitcher
-            categoryContent
-            actionRow
+
+            Divider()
+
+            VStack(spacing: 14) {
+                inputPreview
+                categorySwitcher
+                categoryContent
+                actionRow
+            }
+            .padding(16)
         }
-        .padding(20)
-        .frame(maxWidth: 420)
-        .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(isDraggingPopup ? 0.10 : 0.16), radius: isDraggingPopup ? 14 : 26, y: isDraggingPopup ? 6 : 14)
+        .frame(width: 340)
+        .background(Color.secondarySystemGroupedBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(isDraggingPopup ? 0.12 : 0.2),
+                radius: isDraggingPopup ? 12 : 20,
+                y: isDraggingPopup ? 4 : 8)
         .overlay {
             if showSignPicker {
                 signPickerOverlay
             }
         }
-        .offset(x: panelOffset.width + dragOffset.width, y: panelOffset.height + dragOffset.height)
+        .offset(x: panelOffset.width + dragOffset.width,
+                y: panelOffset.height + dragOffset.height)
     }
+
+    // MARK: - Header
 
     private var header: some View {
         HStack(spacing: 12) {
             HStack {
                 Text("Notenfeld bearbeiten")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .semibold))
 
                 Spacer(minLength: 0)
             }
@@ -61,24 +66,28 @@ struct GradeInputPopup: View {
 
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 20))
+                    .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
+
+    // MARK: - Input Preview
 
     private var inputPreview: some View {
         HStack(spacing: 10) {
             if let option = EmojiOption.fromStoredValue(value) {
                 Image(systemName: option.symbol)
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(option.primaryColor, option.primaryColor.opacity(0.3))
             } else {
                 Text(value.isEmpty ? "Eingabe..." : value)
-                    .font(previewFont)
-                    .foregroundStyle(value.isEmpty ? .secondary : .primary)
+                    .font(.system(size: 22, weight: .medium, design: .rounded))
+                    .foregroundStyle(value.isEmpty ? .tertiary : .primary)
                     .lineLimit(1)
             }
 
@@ -91,119 +100,183 @@ struct GradeInputPopup: View {
                     _ = value.popLast()
                 }
             } label: {
-                Image(systemName: "delete.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Image(systemName: "delete.left.fill")
+                    .font(.system(size: 17))
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color.black.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.systemGroupedBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    // MARK: - Category Switcher
+
     private var categorySwitcher: some View {
-        HStack(spacing: 8) {
+        Picker("Kategorie", selection: $selectedCategory) {
             ForEach(GradeInputCategory.allCases) { category in
-                Button {
-                    selectedCategory = category
-                } label: {
-                    Text(category.rawValue)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(selectedCategory == category ? .white : .primary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(selectedCategory == category ? Color.blue : Color.black.opacity(0.06))
-                        )
-                }
-                .buttonStyle(.plain)
+                Text(category.rawValue).tag(category)
             }
         }
+        .pickerStyle(.segmented)
     }
+
+    // MARK: - Category Content
 
     @ViewBuilder
     private var categoryContent: some View {
         switch selectedCategory {
         case .numbers:
-            VStack(spacing: 8) {
-                ForEach(numberGrid, id: \.self) { row in
-                    HStack(spacing: 8) {
-                        ForEach(row, id: \.self) { token in
-                            Button {
-                                handleNumberToken(token)
-                            } label: {
-                                Text(token)
-                                    .font(.system(size: 20, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.primary)
-                                    .frame(maxWidth: .infinity, minHeight: 46)
-                                    .background(Color.black.opacity(0.06))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
+            numberPad
         case .text:
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
-                ForEach(textOptions, id: \.self) { option in
-                    Button {
-                        value = option
-                    } label: {
-                        Text(option)
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 40)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+            textGrid
         case .emojis:
-            ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
-                    ForEach(emojiOptions) { option in
-                        Button {
-                            value = option.token
-                        } label: {
-                            Image(systemName: option.symbol)
-                                .font(.system(size: 22, weight: .bold))
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(option.primaryColor, option.primaryColor.opacity(0.3))
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                            .background(
-                                LinearGradient(
-                                    colors: emojiCardColors(for: option),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.45), lineWidth: 1)
-                            }
-                            .shadow(color: option.primaryColor.opacity(0.20), radius: 6, y: 3)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .frame(maxHeight: 220)
+            emojiGrid
         }
     }
 
-    private func emojiCardColors(for option: EmojiOption) -> [Color] {
-        [option.primaryColor.opacity(0.18), option.primaryColor.opacity(0.06)]
+    private var numberPad: some View {
+        VStack(spacing: 6) {
+            ForEach(numberGrid, id: \.self) { row in
+                HStack(spacing: 6) {
+                    ForEach(row, id: \.self) { token in
+                        Button {
+                            handleNumberToken(token)
+                        } label: {
+                            Text(token)
+                                .font(.system(size: 20, weight: .medium, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(keyBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(KeyButtonStyle())
+                    }
+                }
+            }
+        }
     }
 
-    private var previewFont: Font {
-        .system(size: 24, weight: .semibold, design: .default)
+    private var textGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 2), spacing: 6) {
+            ForEach(textOptions, id: \.self) { option in
+                Button {
+                    value = option
+                } label: {
+                    Text(option)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .background(keyBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(KeyButtonStyle())
+            }
+        }
+    }
+
+    private var emojiGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), spacing: 6) {
+                ForEach(emojiOptions) { option in
+                    Button {
+                        value = option.token
+                    } label: {
+                        Image(systemName: option.symbol)
+                            .font(.system(size: 20, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(option.primaryColor, option.primaryColor.opacity(0.3))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(option.primaryColor.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(KeyButtonStyle())
+                }
+            }
+        }
+        .frame(maxHeight: 200)
+    }
+
+    // MARK: - Action Row
+
+    private var actionRow: some View {
+        HStack(spacing: 10) {
+            Button(role: .destructive) {
+                value = ""
+            } label: {
+                Text("Leeren")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                onCommit()
+            } label: {
+                Text("Übernehmen")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    // MARK: - Sign Picker Overlay
+
+    private var signPickerOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.001)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        showSignPicker = false
+                    }
+                }
+
+            VStack(spacing: 12) {
+                Text("Vorzeichen")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
+                HStack(spacing: 10) {
+                    signButton("+")
+                    signButton("-")
+                }
+            }
+            .padding(16)
+            .background(Color.secondarySystemGroupedBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
+            .frame(maxWidth: 180)
+        }
+        .padding(10)
+        .transition(.scale(scale: 0.92).combined(with: .opacity))
+    }
+
+    private func signButton(_ sign: String) -> some View {
+        Button {
+            value.append(sign)
+            withAnimation(.easeOut(duration: 0.2)) {
+                showSignPicker = false
+            }
+        } label: {
+            Text(sign)
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
+                .frame(width: 56, height: 44)
+                .background(keyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(KeyButtonStyle())
+    }
+
+    // MARK: - Helpers
+
+    private var keyBackground: some View {
+        Color.systemGroupedBackground
     }
 
     private var panelDragGesture: some Gesture {
@@ -220,82 +293,24 @@ struct GradeInputPopup: View {
             }
     }
 
-    private var actionRow: some View {
-        HStack(spacing: 10) {
-            Button("Leeren") {
-                value = ""
-            }
-            .font(.system(size: 14, weight: .semibold))
-            .buttonStyle(.bordered)
-
-            Spacer()
-
-            Button("Übernehmen") {
-                onCommit()
-            }
-            .font(.system(size: 14, weight: .semibold))
-            .buttonStyle(.borderedProminent)
-        }
-    }
-
-    private var signPickerOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.08)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .onTapGesture {
-                    showSignPicker = false
-                }
-
-            VStack(spacing: 10) {
-                Text("Vorzeichen wählen")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 12) {
-                    Button {
-                        value.append("+")
-                        showSignPicker = false
-                    } label: {
-                        Text("+")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
-                            .frame(width: 64, height: 48)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        value.append("-")
-                        showSignPicker = false
-                    } label: {
-                        Text("-")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
-                            .frame(width: 64, height: 48)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(16)
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.6), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.15), radius: 14, y: 8)
-            .frame(maxWidth: 220)
-        }
-        .padding(10)
-        .transition(.scale(scale: 0.95).combined(with: .opacity))
-    }
-
     private func handleNumberToken(_ token: String) {
         if token == "+-" {
-            showSignPicker = true
+            withAnimation(.easeOut(duration: 0.2)) {
+                showSignPicker = true
+            }
         } else {
             value.append(token)
         }
+    }
+}
+
+// MARK: - Key Button Style
+
+private struct KeyButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.5 : 1.0)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
