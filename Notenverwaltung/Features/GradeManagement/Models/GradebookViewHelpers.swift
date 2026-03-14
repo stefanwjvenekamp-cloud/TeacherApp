@@ -15,10 +15,13 @@ struct TileSettingsTarget: Identifiable {
     let id: UUID
 }
 
-/// Info about a single leaf column for width computation.
+/// Info about a single leaf column for width computation, type lookup, and cell rendering.
 struct LeafColumnInfo {
     let nodeID: UUID
     let width: CGFloat
+    let type: GradeTileType
+    let node: GradeTileNode
+    let depth: Int
 }
 
 /// An insertion slot shown between siblings (or at the edges) when in move-mode.

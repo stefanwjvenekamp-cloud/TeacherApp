@@ -178,11 +178,12 @@ extension GradebookDetailView {
         #endif
     }
 
-    var zoomableTableLayout: AnyView {
+    @ViewBuilder
+    var zoomableTableLayout: some View {
         if #available(iOS 17.0, macOS 14.0, *) {
-            return AnyView(modernZoomableTableLayout)
+            modernZoomableTableLayout
         } else {
-            return AnyView(legacyZoomableTableLayout)
+            legacyZoomableTableLayout
         }
     }
 
@@ -298,3 +299,4 @@ private struct TablePinchZoomContainer<Content: View>: UIViewControllerRepresent
     }
 }
 #endif
+

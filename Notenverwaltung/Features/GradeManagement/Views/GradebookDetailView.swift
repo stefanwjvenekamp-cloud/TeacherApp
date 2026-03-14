@@ -12,14 +12,15 @@ struct GradebookDetailView: View {
     let schoolClass: SchoolClass
     let tab: GradebookTabEntity
     @State var viewModel: GradebookDetailViewModel
+    @State var activeSelectedNodeActionsID: UUID? = nil
 
     @FocusState var focusedStudentID: UUID?
 
     let nameColumnWidth: CGFloat = 180
-    let defaultColumnWidth: CGFloat = 90
-    let minColumnWidth: CGFloat = 75
-    let maxColumnWidth: CGFloat = 300
-    let cellHeight: CGFloat = 38
+    let defaultColumnWidth: CGFloat = 128
+    let minColumnWidth: CGFloat = 104
+    let maxColumnWidth: CGFloat = 360
+    let cellHeight: CGFloat = 50
     let headerGap: CGFloat = 0
 
     init(schoolClass: SchoolClass, tab: GradebookTabEntity, context: ModelContext) {
@@ -111,25 +112,133 @@ struct GradebookDetailView: View {
         widthCache: [UUID: CGFloat]
     ) -> AnyView {
         let nodeWidth = widthCache[node.id] ?? defaultColumnWidth
-        let isLeaf = node.children.isEmpty
         let thisTileIsMoving = viewModel.movingNodeID == node.id
         let isInMoveMode = viewModel.movingNodeID != nil
         let canMergeSiblings = canMergeSiblings(for: node)
 
-        if isLeaf {
-            return AnyView(
+        if node.children.isEmpty {
+            return AnyView(leafHeaderNodeView(
+                node: node,
+                level: level,
+                isRoot: isRoot,
+                parentIsCalculation: parentIsCalculation,
+                availableHeight: availableHeight,
+                nodeWidth: nodeWidth,
+                thisTileIsMoving: thisTileIsMoving,
+                isInMoveMode: isInMoveMode,
+                canMergeSiblings: canMergeSiblings
+            ))
+        } else {
+            return AnyView(groupHeaderNodeView(
+                node: node,
+                level: level,
+                isRoot: isRoot,
+                parentIsCalculation: parentIsCalculation,
+                availableHeight: availableHeight,
+                nodeWidth: nodeWidth,
+                thisTileIsMoving: thisTileIsMoving,
+                isInMoveMode: isInMoveMode,
+                canMergeSiblings: canMergeSiblings,
+                widthCache: widthCache
+            ))
+        }
+    }
+
+    @ViewBuilder
+    private func leafHeaderNodeView(
+        node: GradeTileNode,
+        level: Int,
+        isRoot: Bool,
+        parentIsCalculation: Bool,
+        availableHeight: CGFloat,
+        nodeWidth: CGFloat,
+        thisTileIsMoving: Bool,
+        isInMoveMode: Bool,
+        canMergeSiblings: Bool
+    ) -> some View {
+        ZStack {
+            HeaderTileView(
+                node: node,
+                isRoot: isRoot,
+                level: level,
+                parentIsCalculation: parentIsCalculation,
+                width: nodeWidth,
+                height: availableHeight,
+                colorFillWidth: nodeWidth,
+                tileColorStyle: headerTileColorOwner(for: node)?.colorStyle ?? .automatic,
+                isLeaf: true,
+                showWeightWarning: false,
+                isMoving: thisTileIsMoving,
+                gesturesEnabled: !thisTileIsMoving,
+                onWeightChange: { viewModel.updateWeightAndRedistribute(nodeID: node.id, newWeight: $0) },
+                onAddInput: { viewModel.addChild(to: node.id, type: .input) },
+                onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
+                onAddSiblingArea: { viewModel.addSiblingArea(after: node.id) },
+                canMergeSiblings: canMergeSiblings,
+                onMergeSiblings: { mergeSiblings(for: node) },
+                onOpenSettings: { viewModel.settingsTarget = TileSettingsTarget(id: node.id) },
+                onAutoDistribute: { viewModel.autoDistributeWeights(for: node.id) },
+                onDelete: { requestDeleteNode(for: node.id) },
+                onTitleSubmit: { viewModel.updateNodeTitle(nodeID: node.id, newTitle: $0) },
+                onStartMove: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.movingStudentID = nil
+                        viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
+                    }
+                },
+                dragProvider: {
+                    dragProvider(for: node.id)
+                }
+            )
+            .allowsHitTesting(isInMoveMode ? false : true)
+
+            if thisTileIsMoving {
+                selectedNodeInteractionLayer(
+                    for: node,
+                    isRoot: isRoot,
+                    headerWidth: nodeWidth,
+                    headerHeight: availableHeight,
+                    bodyHeight: 0,
+                    bodyWidth: 0
+                )
+            }
+        }
+        .frame(width: nodeWidth, height: availableHeight)
+        .allowsHitTesting(isInMoveMode ? thisTileIsMoving : true)
+        .zIndex(thisTileIsMoving ? 100 : 0)
+    }
+
+    @ViewBuilder
+    private func groupHeaderNodeView(
+        node: GradeTileNode,
+        level: Int,
+        isRoot: Bool,
+        parentIsCalculation: Bool,
+        availableHeight: CGFloat,
+        nodeWidth: CGFloat,
+        thisTileIsMoving: Bool,
+        isInMoveMode: Bool,
+        canMergeSiblings: Bool,
+        widthCache: [UUID: CGFloat]
+    ) -> some View {
+        let remainingHeight = availableHeight - cellHeight
+        let ownColumnWidth = visibleColumnIDs.contains(node.id) ? width(for: node.id) : 0
+
+        ZStack {
+            VStack(spacing: 0) {
                 HeaderTileView(
                     node: node,
                     isRoot: isRoot,
                     level: level,
                     parentIsCalculation: parentIsCalculation,
                     width: nodeWidth,
-                    height: availableHeight,
+                    height: cellHeight,
                     colorFillWidth: nodeWidth,
                     tileColorStyle: headerTileColorOwner(for: node)?.colorStyle ?? .automatic,
-                    isLeaf: true,
-                    showWeightWarning: false,
+                    isLeaf: false,
+                    showWeightWarning: node.type == .calculation && !GradeTileTree.isWeightValid(for: node),
                     isMoving: thisTileIsMoving,
+                    gesturesEnabled: !thisTileIsMoving,
                     onWeightChange: { viewModel.updateWeightAndRedistribute(nodeID: node.id, newWeight: $0) },
                     onAddInput: { viewModel.addChild(to: node.id, type: .input) },
                     onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
@@ -150,75 +259,66 @@ struct GradebookDetailView: View {
                         dragProvider(for: node.id)
                     }
                 )
-                .allowsHitTesting(isInMoveMode ? thisTileIsMoving : true)
-                .zIndex(thisTileIsMoving ? 100 : 0)
-            )
-        } else {
-            let remainingHeight = availableHeight - cellHeight
+                .frame(width: nodeWidth, height: cellHeight)
 
-            return AnyView(
-                VStack(spacing: 0) {
-                    HeaderTileView(
-                        node: node,
-                        isRoot: isRoot,
-                        level: level,
-                        parentIsCalculation: parentIsCalculation,
-                        width: nodeWidth,
-                        height: cellHeight,
-                        colorFillWidth: nodeWidth,
-                        tileColorStyle: headerTileColorOwner(for: node)?.colorStyle ?? .automatic,
-                        isLeaf: false,
-                        showWeightWarning: node.type == .calculation && !GradeTileTree.isWeightValid(for: node),
-                        isMoving: thisTileIsMoving,
-                        onWeightChange: { viewModel.updateWeightAndRedistribute(nodeID: node.id, newWeight: $0) },
-                        onAddInput: { viewModel.addChild(to: node.id, type: .input) },
-                        onAddCalculation: { viewModel.addChild(to: node.id, type: .calculation) },
-                        onAddSiblingArea: { viewModel.addSiblingArea(after: node.id) },
-                        canMergeSiblings: canMergeSiblings,
-                        onMergeSiblings: { mergeSiblings(for: node) },
-                        onOpenSettings: { viewModel.settingsTarget = TileSettingsTarget(id: node.id) },
-                        onAutoDistribute: { viewModel.autoDistributeWeights(for: node.id) },
-                        onDelete: { requestDeleteNode(for: node.id) },
-                        onTitleSubmit: { viewModel.updateNodeTitle(nodeID: node.id, newTitle: $0) },
-                        onStartMove: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.movingStudentID = nil
-                                viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
-                            }
-                        },
-                        dragProvider: {
-                            dragProvider(for: node.id)
+                if remainingHeight > 0 {
+                    HStack(spacing: 0) {
+                        if visibleColumnIDs.contains(node.id) {
+                            let ownColWidth = width(for: node.id)
+                            containerBackground(for: node, level: level)
+                                .frame(width: ownColWidth, height: remainingHeight)
                         }
-                    )
-                    .allowsHitTesting(isInMoveMode ? thisTileIsMoving : true)
-                    .zIndex(thisTileIsMoving ? 100 : 0)
-                    .frame(width: nodeWidth, height: cellHeight)
 
-                    if remainingHeight > 0 {
-                        HStack(spacing: 0) {
-                            if visibleColumnIDs.contains(node.id) {
-                                let ownColWidth = width(for: node.id)
-                                containerBackground(for: node, level: level)
-                                    .frame(width: ownColWidth, height: remainingHeight)
-                            }
-
-                            ForEach(node.children, id: \.id) { child in
-                                headerNodeView(
-                                    node: child,
-                                    level: level + 1,
-                                    isRoot: false,
-                                    parentIsCalculation: node.type == .calculation,
-                                    availableHeight: remainingHeight,
-                                    widthCache: widthCache
-                                )
-                            }
+                        ForEach(node.children, id: \.id) { child in
+                            headerNodeView(
+                                node: child,
+                                level: level + 1,
+                                isRoot: false,
+                                parentIsCalculation: node.type == .calculation,
+                                availableHeight: remainingHeight,
+                                widthCache: widthCache
+                            )
                         }
-                        .frame(height: remainingHeight)
+                    }
+                    .frame(height: remainingHeight)
+                }
+            }
+            .contentShape(Rectangle())
+            .contextMenu {
+                if !isRoot {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.movingStudentID = nil
+                            viewModel.movingNodeID = viewModel.movingNodeID == node.id ? nil : node.id
+                        }
+                    } label: {
+                        Label("Verschieben", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                     }
                 }
-                .frame(width: nodeWidth, height: availableHeight)
-            )
+                if !isRoot {
+                    Button(role: .destructive) {
+                        requestDeleteNode(for: node.id)
+                    } label: {
+                        Label("Löschen", systemImage: "trash")
+                    }
+                }
+            }
+            .allowsHitTesting(isInMoveMode ? false : true)
+
+            if thisTileIsMoving {
+                selectedNodeInteractionLayer(
+                    for: node,
+                    isRoot: isRoot,
+                    headerWidth: nodeWidth,
+                    headerHeight: cellHeight,
+                    bodyHeight: max(remainingHeight, 0),
+                    bodyWidth: ownColumnWidth
+                )
+            }
         }
+        .frame(width: nodeWidth, height: availableHeight)
+        .allowsHitTesting(isInMoveMode ? thisTileIsMoving : true)
+        .zIndex(thisTileIsMoving ? 100 : 0)
     }
 
     private func canMergeSiblings(for node: GradeTileNode) -> Bool {
@@ -267,7 +367,7 @@ struct GradebookDetailView: View {
         }
     }
 
-    private func dragProvider(for nodeID: UUID) -> NSItemProvider {
+    func dragProvider(for nodeID: UUID) -> NSItemProvider {
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.movingNodeID = nodeID
@@ -450,6 +550,53 @@ struct GradebookDetailView: View {
             }
             recurseX += widthCache[child.id] ?? defaultColumnWidth
         }
+    }
+
+    @ViewBuilder
+    private func selectedNodeInteractionLayer(
+        for node: GradeTileNode,
+        isRoot: Bool,
+        headerWidth: CGFloat,
+        headerHeight: CGFloat,
+        bodyHeight: CGFloat,
+        bodyWidth: CGFloat
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            selectedNodeInteractionSegment(
+                for: node,
+                isRoot: isRoot,
+                width: headerWidth,
+                height: headerHeight
+            )
+
+            if bodyHeight > 0, bodyWidth > 0 {
+                selectedNodeInteractionSegment(
+                    for: node,
+                    isRoot: isRoot,
+                    width: bodyWidth,
+                    height: bodyHeight
+                )
+                .offset(y: headerHeight)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func selectedNodeInteractionSegment(
+        for node: GradeTileNode,
+        isRoot: Bool,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        Rectangle()
+            .fill(Color.black.opacity(0.001))
+            .frame(width: width, height: height)
+            .contentShape(Rectangle())
+            .highPriorityGesture(
+                LongPressGesture(minimumDuration: 0.35).onEnded { _ in
+                    activeSelectedNodeActionsID = node.id
+                }
+            )
     }
 
 
